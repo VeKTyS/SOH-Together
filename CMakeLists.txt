@@ -7,10 +7,31 @@ project(SohTogether CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(FetchContent)
+
+# ENet (MIT), see docs/decisions/0003. Its CMake target neither exports its
+# include directory nor links Winsock under MSVC: both are fixed here.
+FetchContent_Declare(
+    enet
+    GIT_REPOSITORY https://github.com/lsalzman/enet.git
+    GIT_TAG        v1.3.18
+)
+FetchContent_MakeAvailable(enet)
+target_include_directories(enet PUBLIC ${enet_SOURCE_DIR}/include)
+if(WIN32)
+    target_link_libraries(enet PUBLIC ws2_32 winmm)
+endif()
+if(MSVC)
+    # Third-party code: mixed-enum arithmetic and old Winsock name lookups.
+    target_compile_options(enet PRIVATE /wd5287 /wd4996)
+endif()
+
 add_library(coop_core STATIC
     src/soh/Network/Coop/Handshake.cpp
+    src/soh/Network/Coop/Transport.cpp
 )
 target_include_directories(coop_core PUBLIC src)
+target_link_libraries(coop_core PUBLIC enet)
 if(MSVC)
     target_compile_options(coop_core PRIVATE /W4 /WX /permissive- /utf-8)
 else()
@@ -19,7 +40,6 @@ endif()
 
 option(SOHT_BUILD_TESTS "Build unit tests" ON)
 if(SOHT_BUILD_TESTS)
-    include(FetchContent)
     # Same framework and version as libultraship's tests.
     FetchContent_Declare(
         googletest
@@ -30,7 +50,7 @@ if(SOHT_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 
     enable_testing()
-    add_executable(coop_tests tests/HandshakeTests.cpp)
+    add_executable(coop_tests tests/HandshakeTests.cpp tests/TransportTests.cpp)
     target_link_libraries(coop_tests PRIVATE coop_core gtest_main)
     if(MSVC)
         target_compile_options(coop_tests PRIVATE /utf-8)
