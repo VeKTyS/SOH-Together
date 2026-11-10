@@ -19,6 +19,8 @@
 #include <ship/Context.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <optional>
@@ -165,12 +167,32 @@ void OnFrame() {
     }
     Coop::PlayerPose pose;
     bool hasPose = gLocalState.inGame && CoopGame::ReadLocalPose(pose);
+    auto t0 = std::chrono::steady_clock::now();
     GetSession().Tick(gLocalState, hasPose ? &pose : nullptr);
+    auto t1 = std::chrono::steady_clock::now();
     FollowHostTime();
     CoopGame::UpdatePuppets();
     CoopGame::UpdateFlags();
+    auto t2 = std::chrono::steady_clock::now();
     CoopGame::UpdateEnemies();
+    auto t3 = std::chrono::steady_clock::now();
     CoopGame::UpdateItems();
+
+    // every ~10 s while connected, how long our part of the frame takes (to chase lag)
+    static double sNet = 0, sEnemies = 0, sMax = 0;
+    static int sFrames = 0;
+    auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    sNet += ms(t0, t1);
+    sEnemies += ms(t2, t3);
+    sMax = std::max(sMax, ms(t0, t3));
+    if (++sFrames >= 200) {
+        if (GetSession().Role() != Coop::SessionRole::Off) {
+            SPDLOG_INFO("[Coop] Perf: network {:.2f} ms, enemies {:.2f} ms per frame (worst frame {:.2f} ms)",
+                        sNet / sFrames, sEnemies / sFrames, sMax);
+        }
+        sNet = sEnemies = sMax = 0;
+        sFrames = 0;
+    }
 }
 
 void SaveCVars() {

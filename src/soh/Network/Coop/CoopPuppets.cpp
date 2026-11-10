@@ -167,6 +167,17 @@ void Puppet_Update(Actor* actor, PlayState* play) {
     player->unk_862 = InRange<s16>(p.unk_862, -GID_MAXIMUM, GID_MAXIMUM + 1, 0);
     player->unk_85C = p.unk_85C;
     player->av1.actionVar1 = p.actionVar1;
+    // on fire: same flames the game puts on a burning Link (Player_UpdateBodyBurn),
+    // without the damage, that's for the real one
+    for (size_t i = 0; i < p.flameTimers.size() && i < PLAYER_BODYPART_MAX; i++) {
+        uint8_t t = p.flameTimers[i];
+        if (t == 0) {
+            continue;
+        }
+        f32 scale = t > 20 ? CLAMP((t - 20.0f) * 0.01f, 0.19999999f, 0.2f) : t * 0.01f;
+        f32 intensity = CLAMP((t - 25.0f) * 0.02f, 0.0f, 1.0f);
+        EffectSsFireTail_SpawnFlame(gPlayState, &player->actor, &player->bodyPartsPos[i], scale, (s16)i, intensity);
+    }
 
     // root motion, same as Player_ApplyAnimMovementScaledByAge but with THEIR age
     Vec3f diff;
@@ -276,6 +287,9 @@ bool ReadLocalPose(Coop::PlayerPose& pose) {
     pose.unk_862 = player->unk_862;
     pose.unk_85C = player->unk_85C;
     pose.actionVar1 = player->av1.actionVar1;
+    for (size_t i = 0; i < pose.flameTimers.size() && i < PLAYER_BODYPART_MAX; i++) {
+        pose.flameTimers[i] = player->bodyIsBurning ? player->bodyFlameTimers[i] : 0;
+    }
     return true;
 }
 

@@ -131,6 +131,9 @@ std::vector<uint8_t> EncodePlayerPose(const PlayerPose& p) {
     w.U16(static_cast<uint16_t>(p.unk_862));
     WriteFloat(w, p.unk_85C);
     w.U8(static_cast<uint8_t>(p.actionVar1));
+    for (uint8_t t : p.flameTimers) {
+        w.U8(t);
+    }
     return w.Take();
 }
 
@@ -151,7 +154,15 @@ std::optional<PlayerPose> DecodePlayerPose(std::span<const uint8_t> bytes) {
         !ReadS8(r, p.currentBoots) || !ReadS8(r, p.currentShield) || !ReadS8(r, p.currentTunic) ||
         !r.U32(p.stateFlags1) || !r.U32(p.stateFlags2) || !r.U8(p.buttonItem0) || !ReadS8(r, p.itemAction) ||
         !ReadS8(r, p.heldItemAction) || !r.U8(p.modelGroup) || !ReadS8(r, p.invincibilityTimer) || !r.U16(unk862) ||
-        !ReadFloat(r, p.unk_85C) || !ReadS8(r, p.actionVar1) || r.Remaining() != 0) {
+        !ReadFloat(r, p.unk_85C) || !ReadS8(r, p.actionVar1)) {
+        return std::nullopt;
+    }
+    for (uint8_t& t : p.flameTimers) {
+        if (!r.U8(t)) {
+            return std::nullopt;
+        }
+    }
+    if (r.Remaining() != 0) {
         return std::nullopt;
     }
     if (!std::isfinite(p.unk_85C)) {

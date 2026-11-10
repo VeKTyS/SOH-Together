@@ -186,6 +186,7 @@ struct PlayerState {
 
 // Link's skeleton has 22 limbs + 2 extra slots the animation code uses.
 inline constexpr size_t kPoseJointCount = 24;
+inline constexpr size_t kPoseFlameCount = 18; // PLAYER_BODYPART_MAX
 
 // Everything needed to draw someone else's Link exactly like they see it:
 // skeleton angles, what they wear and hold. Field names follow SoH's Player
@@ -209,6 +210,8 @@ struct PlayerPose {
     int16_t unk_862 = 0; // item shown above Link's head when getting something
     float unk_85C = 0;   // deku stick length and such
     int8_t actionVar1 = 0;
+    // on fire (fire keese, lava...): one flame timer per body part, 0 = no flame
+    std::array<uint8_t, kPoseFlameCount> flameTimers{};
 
     bool operator==(const PlayerPose&) const = default;
 };

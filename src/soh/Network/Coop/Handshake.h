@@ -23,7 +23,8 @@ inline constexpr uint32_t kHelloMagic = 0x54484F53;
 // 4: flag sync messages (FlagChange, FlagSnapshotRequest, FlagSnapshot)
 // 5: enemies (EnemyKilled, EnemyStates, EnemyHit), items (ItemGiven, DungeonItems), inventory in FlagSnapshot
 // 6: time of day in PlayerState
-inline constexpr uint16_t kProtocolVersion = 6;
+// 7: enemy memory copy in EnemyState, flame timers in PlayerPose
+inline constexpr uint16_t kProtocolVersion = 7;
 
 // 32 bytes, not 32 letters: an "é" takes 2 bytes.
 inline constexpr size_t kMaxNameBytes = 32;

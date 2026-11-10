@@ -181,7 +181,7 @@ TEST(Messages, PoseAndStateAreNotMixedUp) {
 
 // Keeps an eye on bandwidth: it's sent 20 times a second to every player.
 TEST(Messages, PlayerPoseStaysSmall) {
-    EXPECT_LE(EncodePlayerPose(MakePose()).size(), 200u);
+    EXPECT_LE(EncodePlayerPose(MakePose()).size(), 220u);
 }
 
 TEST(Messages, FlagChangeRoundTrip) {
