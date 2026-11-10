@@ -4,11 +4,13 @@
 //   follows it (it's from the room's actor list, so everyone has one). When it
 //   breaks, the kill sync in CoopEnemies.cpp breaks it everywhere.
 // - bombs and bombchus only exist in the game of whoever placed them. Others get
-//   a look-alike ("ghost") that follows the real one, copies its memory (fuse
-//   timer, flashing...), and when the real one is gone, the ghost goes boom.
-//   The ghost's boom is just the visual + sound: the real bomb already did the
-//   damage (walls go through flags, enemies through the host). Otherwise
-//   everything would get hit twice.
+//   a look-alike ("ghost") that follows the real one and copies its memory (fuse
+//   timer, flashing...). A bomb that explodes switches to BOMB_EXPLOSION: that's
+//   when we go boom (a bomb that just sinks in water disappears without it, a
+//   bombchu explodes by spawning a bomb, so both work the same).
+//   The boom is just the visual + sound: the real bomb already did the damage
+//   (walls go through flags, enemies through the host). Otherwise everything
+//   would get hit twice.
 //
 // Each game sends the list of its things every frame (snapshot channel), the
 // host passes it on to the others.
@@ -17,6 +19,7 @@
 
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/ObjectExtension/ActorListIndex.h"
+#include "src/overlays/actors/ovl_En_Bom/z_en_bom.h"
 
 #include <spdlog/spdlog.h>
 
@@ -47,6 +50,7 @@ std::unordered_map<Actor*, int> sFollowed; // props we picked up -> frames they'
 
 struct OwnerThings {
     std::map<uint16_t, Actor*> ghosts; // their localId -> our look-alike
+    std::set<uint16_t> boomed;         // their bombs we already blew up
     int quietFrames = 0;               // frames since their last list
 };
 std::map<uint32_t, OwnerThings> sOwners;
@@ -140,33 +144,37 @@ void SendOurThings() {
 
 // --- applying the others' things ---
 
-void Boom(Actor* ghost) {
+// Same effects as EnBom_Explode, minus the damage.
+void Boom(Vec3f pos) {
     Vec3f zero = { 0.0f, 0.0f, 0.0f };
-    Vec3f accel = { 0.0f, 0.6f, 0.0f }; // same numbers the bomb uses for its own explosion
-    EffectSsBomb2_SpawnLayered(gPlayState, &ghost->world.pos, &zero, &accel, 100, 19);
-    Audio_PlayActorSound2(ghost, NA_SE_IT_BOMB_EXPLOSION);
+    Vec3f accel = { 0.0f, 0.6f, 0.0f };
+    Vec3f shockAccel = { 0.0f, 0.0f, 0.0f };
+    EffectSsBomb2_SpawnLayered(gPlayState, &pos, &zero, &accel, 100, 19);
+    SoundSource_PlaySfxAtFixedWorldPos(gPlayState, &pos, 50, NA_SE_IT_BOMB_EXPLOSION);
+    Camera_AddQuake(&gPlayState->mainCamera, 2, 0xB, 8);
+    Vec3f floor = pos;
+    floor.y -= 10.0f;
+    EffectSsBlast_SpawnWhiteShockwave(gPlayState, &floor, &zero, &shockAccel);
 }
 
-void RemoveGhost(Actor* ghost, bool explode) {
-    if (explode && ghost->category == ACTORCAT_EXPLOSIVE) {
-        Boom(ghost);
-    }
+void RemoveGhost(Actor* ghost) {
     sGhosts.erase(ghost);
     Actor_Kill(ghost);
 }
 
-void DropOwner(OwnerThings& owner, bool explode) {
+void DropOwner(OwnerThings& owner) {
     for (auto& [id, ghost] : owner.ghosts) {
-        RemoveGhost(ghost, explode);
+        RemoveGhost(ghost);
     }
     owner.ghosts.clear();
+    owner.boomed.clear();
 }
 
 void ApplyTheirThings(const Coop::ThingStates& list) {
     OwnerThings& owner = sOwners[list.owner];
     owner.quietFrames = 0;
     if (list.sceneNum != gPlayState->sceneNum || list.layer != static_cast<uint8_t>(gSaveContext.sceneLayer)) {
-        DropOwner(owner, false); // they're somewhere else
+        DropOwner(owner); // they're somewhere else
         return;
     }
     std::set<uint16_t> seen;
@@ -184,6 +192,17 @@ void ApplyTheirThings(const Coop::ThingStates& list) {
             continue;
         }
         seen.insert(t.localId);
+        if (t.actorId == ACTOR_EN_BOM && t.params == BOMB_EXPLOSION) {
+            // it just went off: boom once, the ghost isn't needed anymore
+            if (owner.boomed.insert(t.localId).second) {
+                Boom({ t.pos.x, t.pos.y, t.pos.z });
+            }
+            if (auto g = owner.ghosts.find(t.localId); g != owner.ghosts.end()) {
+                RemoveGhost(g->second);
+                owner.ghosts.erase(g);
+            }
+            continue;
+        }
         Actor*& ghost = owner.ghosts[t.localId];
         if (ghost == nullptr) {
             ghost = Actor_Spawn(&gPlayState->actorCtx, gPlayState, t.actorId, t.pos.x, t.pos.y, t.pos.z, t.rot.x,
@@ -198,15 +217,16 @@ void ApplyTheirThings(const Coop::ThingStates& list) {
         ghost->shape.rot = { t.rot.x, t.rot.y, t.rot.z };
         CoopGame::WriteActorBody(ghost, t.body, t.slotKinds); // fuse timer, flashing...
     }
-    // gone from their list: it blew up (or got picked up by the game, same thing for us)
+    // gone from their list: already blew up, sank in water, or the bombchu that spawned its bomb
     for (auto it = owner.ghosts.begin(); it != owner.ghosts.end();) {
         if (!seen.contains(it->first)) {
-            RemoveGhost(it->second, true);
+            RemoveGhost(it->second);
             it = owner.ghosts.erase(it);
         } else {
             ++it;
         }
     }
+    std::erase_if(owner.boomed, [&](uint16_t id) { return !seen.contains(id); });
 }
 
 void OnShouldActorUpdate(void* ptr, bool* should) {
@@ -262,7 +282,7 @@ void UpdateThings() {
     }
     for (auto it = sOwners.begin(); it != sOwners.end();) {
         if (++it->second.quietFrames > kOwnerGoneFrames) {
-            DropOwner(it->second, false);
+            DropOwner(it->second);
             it = sOwners.erase(it);
         } else {
             ++it;

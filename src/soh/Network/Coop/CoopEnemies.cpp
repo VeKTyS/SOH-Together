@@ -151,6 +151,20 @@ bool IsKillSynced(Actor* actor) {
     return IsSyncedCategory(actor) || IsBreakableId(actor->id);
 }
 
+// Most bushes don't die when cut: they're marked as cut, or (when thrown) go
+// back home small, then grow back. Only "type 0" ones die. So for the others
+// we watch for "just got cut or small" instead of a kill.
+bool IsRegrowingBush(int16_t id, int16_t params) {
+    return id == ACTOR_EN_KUSA && (params & 3) != 0;
+}
+
+bool IsBushDown(Actor* a) {
+    return (a->flags & ACTOR_FLAG_GRASS_DESTROYED) || a->scale.y < 0.3f; // full size is 0.4, small is 0.16
+}
+
+std::unordered_map<Actor*, bool> sBushDown;           // bush -> was down last update
+std::unordered_map<Actor*, int> sBushCutByTeammate; // bush -> updates left to see the cut we replayed
+
 bool SessionActive() {
     Coop::SessionRole role = CoopGame::Session().Role();
     return role == Coop::SessionRole::Hosting || role == Coop::SessionRole::Connected;
@@ -315,6 +329,36 @@ bool IsBeingUnloaded(Actor* actor) {
     return actor->room >= 0 && actor->room != rooms.curRoom.num && actor->room != rooms.prevRoom.num;
 }
 
+void SendBushCut(Actor* bush) {
+    Coop::EnemyKill cut;
+    if (sApplyingRemote || !MakeKey(bush, cut)) {
+        return;
+    }
+    std::lock_guard lock(CoopGame::Mutex());
+    if (SessionActive()) {
+        CoopGame::Session().SendEnemyKill(cut); // no dead list: it grows back
+    }
+}
+
+// After a bush's update: did it just get cut? Tell the others (unless it's the
+// cut a teammate sent us).
+void TrackBush(Actor* bush) {
+    bool down = IsBushDown(bush);
+    bool& wasDown = sBushDown.try_emplace(bush, down).first->second;
+    auto teammate = sBushCutByTeammate.find(bush);
+    if (down && !wasDown) {
+        if (teammate != sBushCutByTeammate.end()) {
+            bush->world.pos = bush->home.pos; // a teammate may have thrown ours away: grow back at home
+            sBushCutByTeammate.erase(teammate);
+        } else {
+            SendBushCut(bush);
+        }
+    } else if (teammate != sBushCutByTeammate.end() && --teammate->second <= 0) {
+        sBushCutByTeammate.erase(teammate); // the hit never took
+    }
+    wasDown = down;
+}
+
 void OnActorKill(void* ptr) {
     Actor* actor = static_cast<Actor*>(ptr);
     // most enemies only call Actor_Kill at the end of their death animation,
@@ -325,7 +369,7 @@ void OnActorKill(void* ptr) {
     if (IsSyncedCategory(actor) && actor->colChkInfo.health != 0) {
         return; // an enemy leaving without dying (despawn), not a kill
     }
-    SendKill(actor);
+    SendKill(actor); // a thrown "type 2" bush lands here: the others cut theirs (ApplyKill)
 }
 
 // Fired by ~50 enemies right when they're beaten (before the death animation),
@@ -336,7 +380,24 @@ void OnEnemyDefeat(void* ptr) {
 
 // Someone else killed this one: if our copy is loaded, kill it with a big hit
 // so it plays its own death (and drops its own loot, for us).
+void ApplyBushCut(const Coop::EnemyKill& cut) {
+    if (gPlayState->sceneNum != cut.sceneNum || CurrentLayer() != cut.layer) {
+        return;
+    }
+    Actor* bush = FindEnemy(cut.room, cut.listIndex, cut.actorId);
+    if (bush == nullptr || bush->update == nullptr || IsBushDown(bush)) {
+        return; // not loaded, or already cut here too
+    }
+    sBushCutByTeammate[bush] = kForceKillFrames;
+    Vec3s pos = { (s16)bush->world.pos.x, (s16)bush->world.pos.y, (s16)bush->world.pos.z };
+    ReplayHit(bush, sEnemies[bush], 1, 0, DMG_SLASH, pos); // it cuts itself: pieces, sound, its own loot
+}
+
 void ApplyKill(const Coop::EnemyKill& kill) {
+    if (IsRegrowingBush(kill.actorId, kill.params)) {
+        ApplyBushCut(kill);
+        return;
+    }
     sDead.insert(kill);
     if (gPlayState->sceneNum != kill.sceneNum || CurrentLayer() != kill.layer) {
         return; // not here: the dead list stops it from spawning when we get there
@@ -825,6 +886,10 @@ void SendHealthDrop(Actor* actor, uint8_t damage) {
 void OnActorUpdate(void* ptr) {
     EndAggroSwap();
     Actor* actor = static_cast<Actor*>(ptr);
+    if (gPlayState != nullptr && IsRegrowingBush(actor->id, actor->params) && GetActorListIndex(actor) >= 0) {
+        TrackBush(actor);
+        return;
+    }
     auto it = sEnemies.find(actor);
     if (it == sEnemies.end() || gPlayState == nullptr || !IsSyncedCategory(actor) || GetActorListIndex(actor) < 0) {
         return;
@@ -966,6 +1031,8 @@ void OnActorInit(void* actorPtr) {
 
 void OnActorDestroy(void* actorPtr) {
     sEnemies.erase(static_cast<Actor*>(actorPtr));
+    sBushDown.erase(static_cast<Actor*>(actorPtr));
+    sBushCutByTeammate.erase(static_cast<Actor*>(actorPtr));
 }
 
 } // namespace
