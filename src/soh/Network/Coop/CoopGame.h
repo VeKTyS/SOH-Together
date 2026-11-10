@@ -57,4 +57,7 @@ void RegisterItemHooks();
 std::vector<uint8_t> BuildSaveBlob();
 bool ApplySaveBlob(const std::vector<uint8_t>& blob);
 
+// --- world (CoopWorld.cpp): loaded things react to teammates' flags right away ---
+void RegisterWorldHooks();
+
 } // namespace CoopGame
