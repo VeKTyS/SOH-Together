@@ -4,6 +4,7 @@
 // Nothing in SoH had to be edited for this, it registers itself on startup.
 
 #include "soh/Network/Coop/BuildId.h"
+#include "soh/Network/Coop/CoopGame.h"
 #include "soh/Network/Coop/Session.h"
 
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
@@ -37,10 +38,6 @@ extern std::shared_ptr<SohMenu> mSohMenu;
 
 namespace {
 
-// The menu and the game loop both touch the session. They probably run on the
-// same thread, but a lock costs nothing here so let's not bet on it.
-std::mutex gMutex;
-
 // Last state we sent, kept so the menu can show how far the others are.
 Coop::PlayerState gLocalState;
 
@@ -52,8 +49,7 @@ std::vector<std::string> gHostAddresses;
 std::optional<Coop::PeerId> gTeleportTarget;
 
 Coop::Session& GetSession() {
-    static Coop::Session session([](const std::string& line) { SPDLOG_INFO("[Coop] {}", line); });
-    return session;
+    return CoopGame::Session();
 }
 
 // Two players can only play together if they run the exact same build.
@@ -144,12 +140,15 @@ void HandleTeleportRequest() {
 }
 
 void OnFrame() {
-    std::lock_guard lock(gMutex);
+    std::lock_guard lock(CoopGame::Mutex());
     gLocalState = ReadLocalState();
     if (gTeleportTarget && gLocalState.inGame) {
         HandleTeleportRequest();
     }
-    GetSession().Tick(gLocalState);
+    Coop::PlayerPose pose;
+    bool hasPose = gLocalState.inGame && CoopGame::ReadLocalPose(pose);
+    GetSession().Tick(gLocalState, hasPose ? &pose : nullptr);
+    CoopGame::UpdatePuppets();
 }
 
 void SaveCVars() {
@@ -301,7 +300,7 @@ void DrawClient(Coop::Session& session) {
 }
 
 void DrawCoopMenu(WidgetInfo& info) {
-    std::lock_guard lock(gMutex);
+    std::lock_guard lock(CoopGame::Mutex());
     Coop::Session& session = GetSession();
     switch (session.Role()) {
         case Coop::SessionRole::Off:
@@ -329,9 +328,30 @@ void RegisterCoopMenu() {
 void RegisterCoopFrameHook() {
     SPDLOG_INFO("[Coop] build {}", SOHT_BUILD_ID);
     COND_HOOK(OnGameFrameUpdate, true, OnFrame);
+    CoopGame::RegisterPuppetHooks();
 }
 
 } // namespace
+
+namespace CoopGame {
+
+Coop::Session& Session() {
+    static Coop::Session session([](const std::string& line) { SPDLOG_INFO("[Coop] {}", line); });
+    return session;
+}
+
+// The menu, the game loop and the puppets all touch the session. They should
+// all run on the game thread, but a lock costs nothing so let's not bet on it.
+std::mutex& Mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+const Coop::PlayerState& LocalState() {
+    return gLocalState;
+}
+
+} // namespace CoopGame
 
 static RegisterMenuInitFunc sCoopMenuInit(RegisterCoopMenu);
 static RegisterShipInitFunc sCoopInit(RegisterCoopFrameHook);
