@@ -12,6 +12,15 @@
 #endif
 #include <enet/enet.h>
 
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#endif
+
+#include <algorithm>
 #include <mutex>
 
 namespace Coop {
@@ -20,11 +29,16 @@ namespace {
 
 // enet_initialize() is process-wide: reference-count it so several Transports
 // (host + client in tests, or a future relay) can coexist.
-std::mutex gEnetMutex;
+// The mutex is intentionally never destroyed: a static Session owned by the
+// game is destroyed at process exit, possibly after this file's statics.
+std::mutex& EnetMutex() {
+    static std::mutex* mutex = new std::mutex();
+    return *mutex;
+}
 int gEnetUsers = 0;
 
 bool AcquireEnet() {
-    std::lock_guard lock(gEnetMutex);
+    std::lock_guard lock(EnetMutex());
     if (gEnetUsers == 0 && enet_initialize() != 0) {
         return false;
     }
@@ -33,7 +47,7 @@ bool AcquireEnet() {
 }
 
 void ReleaseEnet() {
-    std::lock_guard lock(gEnetMutex);
+    std::lock_guard lock(EnetMutex());
     if (--gEnetUsers == 0) {
         enet_deinitialize();
     }
@@ -61,6 +75,31 @@ ENetHost* CreateHost(const ENetAddress* address, size_t maxPeers) {
 }
 
 } // namespace
+
+std::vector<std::string> LocalIPv4Addresses() {
+    std::vector<std::string> result;
+    if (!AcquireEnet()) { // also initializes Winsock on Windows
+        return result;
+    }
+    char hostName[256] = {};
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    addrinfo* list = nullptr;
+    if (gethostname(hostName, sizeof(hostName) - 1) == 0 && getaddrinfo(hostName, nullptr, &hints, &list) == 0) {
+        for (addrinfo* it = list; it != nullptr; it = it->ai_next) {
+            char text[INET_ADDRSTRLEN] = {};
+            auto* addr = reinterpret_cast<sockaddr_in*>(it->ai_addr);
+            if (inet_ntop(AF_INET, &addr->sin_addr, text, sizeof(text)) != nullptr &&
+                std::string_view(text).rfind("127.", 0) != 0 &&
+                std::find(result.begin(), result.end(), text) == result.end()) {
+                result.emplace_back(text);
+            }
+        }
+        freeaddrinfo(list);
+    }
+    ReleaseEnet();
+    return result;
+}
 
 uint32_t Transport::EncodeDisconnectData(DisconnectReason reason, HandshakeError error) {
     return static_cast<uint32_t>(reason) | (static_cast<uint32_t>(error) << 8);
@@ -303,6 +342,15 @@ size_t Transport::ReadyPeerCount() const {
         n += state.ready && !state.closing ? 1 : 0;
     }
     return n;
+}
+
+void Transport::Flush() {
+    enet_host_flush(mHost);
+}
+
+uint32_t Transport::RoundTripMs(PeerId peer) const {
+    auto it = mPeers.find(peer);
+    return it == mPeers.end() ? 0 : it->second.enet->lastRoundTripTime;
 }
 
 } // namespace Coop

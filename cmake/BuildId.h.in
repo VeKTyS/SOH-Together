@@ -1,0 +1,5 @@
+#pragma once
+
+// Made by CMake from cmake/BuildId.h.in, don't edit.
+// Our git commit, plus "-dirty" if there were uncommitted changes when CMake ran.
+#define SOHT_BUILD_ID "@SOHT_BUILD_ID@"

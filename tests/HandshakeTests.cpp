@@ -143,3 +143,15 @@ TEST(Compatibility, EveryErrorHasADescription) {
         EXPECT_STRNE(Describe(static_cast<HandshakeError>(e)), "Unknown error");
     }
 }
+
+// Reference values from the FNV specification (http://www.isthe.com/chongo/tech/comp/fnv/).
+TEST(BuildHash, MatchesFnv1aReferenceVectors) {
+    EXPECT_EQ(BuildHash(""), 0xCBF29CE484222325ULL);
+    EXPECT_EQ(BuildHash("a"), 0xAF63DC4C8601EC8CULL);
+    EXPECT_EQ(BuildHash("foobar"), 0x85944171F73967E8ULL);
+}
+
+TEST(BuildHash, DifferentBuildsGiveDifferentHashes) {
+    EXPECT_NE(BuildHash("soht:abc123/soh:f0599f9"), BuildHash("soht:abc124/soh:f0599f9"));
+    EXPECT_NE(BuildHash("soht:abc123/soh:f0599f9"), BuildHash("soht:abc123-dirty/soh:f0599f9"));
+}
