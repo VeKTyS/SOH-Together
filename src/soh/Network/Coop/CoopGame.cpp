@@ -177,6 +177,7 @@ void OnFrame() {
     CoopGame::UpdateEnemies();
     auto t3 = std::chrono::steady_clock::now();
     CoopGame::UpdateItems();
+    CoopGame::UpdateThings();
 
     // every ~10 s while connected, how long our part of the frame takes (to chase lag)
     static double sNet = 0, sEnemies = 0, sMax = 0;
@@ -385,6 +386,7 @@ void RegisterCoopFrameHook() {
     CoopGame::RegisterEnemyHooks();
     CoopGame::RegisterItemHooks();
     CoopGame::RegisterWorldHooks();
+    CoopGame::RegisterThingHooks();
 }
 
 } // namespace

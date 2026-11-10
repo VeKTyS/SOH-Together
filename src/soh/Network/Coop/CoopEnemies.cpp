@@ -132,6 +132,25 @@ bool IsSyncedCategory(Actor* actor) {
     return actor->category == ACTORCAT_ENEMY || actor->category == ACTORCAT_BOSS;
 }
 
+// Pots, bushes, rocks, crates: broken by one player = broken for everyone, and
+// everyone gets their own loot (they break with their own code on each game).
+bool IsBreakableId(int16_t id) {
+    switch (id) {
+        case ACTOR_OBJ_TSUBO:
+        case ACTOR_EN_KUSA:
+        case ACTOR_EN_ISHI:
+        case ACTOR_OBJ_KIBAKO:
+        case ACTOR_OBJ_KIBAKO2:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsKillSynced(Actor* actor) {
+    return IsSyncedCategory(actor) || IsBreakableId(actor->id);
+}
+
 bool SessionActive() {
     Coop::SessionRole role = CoopGame::Session().Role();
     return role == Coop::SessionRole::Hosting || role == Coop::SessionRole::Connected;
@@ -143,7 +162,7 @@ uint8_t CurrentLayer() {
 
 // Builds the network id of a live actor. False if it's not one we sync.
 bool MakeKey(Actor* actor, Coop::EnemyKill& out) {
-    if (gPlayState == nullptr || !IsSyncedCategory(actor)) {
+    if (gPlayState == nullptr || !IsKillSynced(actor)) {
         return false;
     }
     int16_t index = GetActorListIndex(actor);
@@ -160,7 +179,7 @@ bool MakeKey(Actor* actor, Coop::EnemyKill& out) {
 }
 
 Actor* FindEnemy(int8_t room, int16_t index, int16_t actorId) {
-    for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+    for (int cat = 0; cat < ACTORCAT_MAX; cat++) {
         for (Actor* a = gPlayState->actorCtx.actorLists[cat].head; a != nullptr; a = a->next) {
             if (a->room == room && a->id == actorId && GetActorListIndex(a) == index) {
                 return a;
@@ -300,8 +319,11 @@ void OnActorKill(void* ptr) {
     Actor* actor = static_cast<Actor*>(ptr);
     // most enemies only call Actor_Kill at the end of their death animation,
     // with 0 health. Anything else is a despawn, not a death.
-    if (gPlayState == nullptr || !IsSyncedCategory(actor) || actor->colChkInfo.health != 0 || IsBeingUnloaded(actor)) {
+    if (gPlayState == nullptr || !IsKillSynced(actor) || IsBeingUnloaded(actor)) {
         return;
+    }
+    if (IsSyncedCategory(actor) && actor->colChkInfo.health != 0) {
+        return; // an enemy leaving without dying (despawn), not a kill
     }
     SendKill(actor);
 }
@@ -331,7 +353,8 @@ void ApplyKill(const Coop::EnemyKill& kill) {
     uint8_t health = actor->colChkInfo.health;
     actor->colChkInfo.health = 1; // whatever it had, the next hit kills
     Vec3s pos = { (s16)actor->world.pos.x, (s16)actor->world.pos.y, (s16)actor->world.pos.z };
-    ReplayHit(actor, info, std::max<uint8_t>(health, 1), 0, DMG_SLASH, pos);
+    uint32_t dmg = IsBreakableId(actor->id) ? (DMG_EXPLOSIVE | DMG_HAMMER | DMG_SLASH) : DMG_SLASH;
+    ReplayHit(actor, info, std::max<uint8_t>(health, 1), 0, dmg, pos);
     SPDLOG_INFO("[Coop] Enemy killed by a teammate: actor {:#x} room {} index {}", kill.actorId, kill.room,
                 kill.listIndex);
 }
@@ -803,7 +826,7 @@ void OnActorUpdate(void* ptr) {
     EndAggroSwap();
     Actor* actor = static_cast<Actor*>(ptr);
     auto it = sEnemies.find(actor);
-    if (it == sEnemies.end() || gPlayState == nullptr || GetActorListIndex(actor) < 0) {
+    if (it == sEnemies.end() || gPlayState == nullptr || !IsSyncedCategory(actor) || GetActorListIndex(actor) < 0) {
         return;
     }
     EnemyInfo& info = it->second;
@@ -897,7 +920,7 @@ void OnShouldActorUpdate(void* ptr, bool* should) {
 
 void OnColliderSetup(void* actorPtr, void* collider) {
     Actor* actor = static_cast<Actor*>(actorPtr);
-    if (actor != nullptr && IsSyncedCategory(actor)) {
+    if (actor != nullptr && IsKillSynced(actor)) {
         sEnemies[actor].colliders.push_back(static_cast<Collider*>(collider));
     }
 }
@@ -1044,6 +1067,26 @@ void UpdateEnemies() {
     }
     TickForcedKills();
     ForgetEmptyRooms();
+}
+
+void ReadActorBody(Actor* actor, std::vector<uint8_t>& body, std::vector<uint8_t>& kinds) {
+    Coop::EnemyState e;
+    auto it = sEnemies.find(actor);
+    ReadBody(actor, it != sEnemies.end() ? it->second : EnemyInfo{}, e);
+    body = std::move(e.body);
+    kinds = std::move(e.slotKinds);
+}
+
+void WriteActorBody(Actor* actor, const std::vector<uint8_t>& body, const std::vector<uint8_t>& kinds) {
+    Coop::EnemyState e;
+    e.body = body;
+    e.slotKinds = kinds;
+    auto it = sEnemies.find(actor);
+    WriteBody(actor, it != sEnemies.end() ? it->second : EnemyInfo{}, e);
+}
+
+bool IsBreakable(int16_t actorId) {
+    return IsBreakableId(actorId);
 }
 
 void RegisterEnemyHooks() {

@@ -52,6 +52,15 @@ void RegisterFlagHooks();
 // Call every frame with the session locked: runs/copies enemies, applies hits and kills.
 void UpdateEnemies();
 void RegisterEnemyHooks();
+// "The rest of an actor's memory", the same copy enemies use (CoopEnemies.cpp)
+void ReadActorBody(::Actor* actor, std::vector<uint8_t>& body, std::vector<uint8_t>& kinds);
+void WriteActorBody(::Actor* actor, const std::vector<uint8_t>& body, const std::vector<uint8_t>& kinds);
+// pots, bushes, rocks, crates
+bool IsBreakable(int16_t actorId);
+
+// --- things carried / thrown / bombs (CoopThings.cpp) ---
+void UpdateThings();
+void RegisterThingHooks();
 
 // --- items (CoopItems.cpp) ---
 

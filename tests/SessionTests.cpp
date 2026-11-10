@@ -461,3 +461,28 @@ TEST(SessionEnemies, BigEnemyPacketArrives) {
         << "size " << EncodeEnemyStates(states).size();
     EXPECT_EQ(got->enemies.size(), 20u);
 }
+
+TEST(SessionThings, ClientThingsReachTheOtherClientLatestOnly) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        return host.Players().size() == 2 && alice.Role() == SessionRole::Connected &&
+               bob.Role() == SessionRole::Connected;
+    }));
+    ThingStates mine;
+    mine.owner = 42;
+    mine.things.resize(1);
+    std::vector<ThingStates> atBob, atHost;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        alice.SendThingStates(mine); // every frame, like the game
+        for (auto& t : bob.TakeThingStates())
+            atBob.push_back(t);
+        for (auto& t : host.TakeThingStates())
+            atHost.push_back(t);
+        return !atBob.empty() && !atHost.empty();
+    }));
+    EXPECT_EQ(atBob.back().owner, 42u);
+    EXPECT_EQ(atHost.back().things.size(), 1u);
+}

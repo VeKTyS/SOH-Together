@@ -388,3 +388,34 @@ TEST(Messages, FlagSnapshotCarriesTheSaveBlob) {
     bytes.pop_back(); // blob shorter than its size says
     EXPECT_FALSE(DecodeFlagSnapshot(bytes).has_value());
 }
+
+TEST(Messages, ThingStatesRoundTripAndLimits) {
+    ThingStates in;
+    in.owner = 0xDEADBEEF;
+    in.sceneNum = 0x55;
+    in.layer = 2;
+    ThingState pot;
+    pot.localId = 3;
+    pot.room = 1;
+    pot.listIndex = 14;
+    pot.actorId = 0x111;
+    pot.pos = { 10.5f, 40.0f, -200.0f };
+    pot.rot = { 0, 1234, 0 };
+    ThingState bomb; // only exists for its owner
+    bomb.localId = 4;
+    bomb.listIndex = -1;
+    bomb.actorId = 0x10;
+    bomb.body = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    bomb.slotKinds = { 0, 0 };
+    in.things = { pot, bomb };
+    std::optional<ThingStates> out = DecodeThingStates(EncodeThingStates(in));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+
+    std::vector<uint8_t> full = EncodeThingStates(in);
+    for (size_t len = 0; len < full.size(); len++) {
+        EXPECT_FALSE(DecodeThingStates(std::span<const uint8_t>(full.data(), len)).has_value()) << len;
+    }
+    std::vector<uint8_t> tooMany = { static_cast<uint8_t>(MessageType::ThingStates), 0, 0, 0, 0, 0, 0, 0, 99 };
+    EXPECT_FALSE(DecodeThingStates(tooMany).has_value());
+}
