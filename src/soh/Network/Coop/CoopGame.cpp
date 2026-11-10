@@ -343,6 +343,7 @@ void RegisterCoopFrameHook() {
     CoopGame::RegisterFlagHooks();
     CoopGame::RegisterEnemyHooks();
     CoopGame::RegisterItemHooks();
+    CoopGame::RegisterWorldHooks();
 }
 
 } // namespace
