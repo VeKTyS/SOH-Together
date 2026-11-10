@@ -193,3 +193,98 @@ TEST(Session, PoseIsReceivedAndDroppedWhenTheyLeaveTheGame) {
 
     ASSERT_TRUE(TickUntil(host, StateAt(0), client, onTitle, [&] { return !host.Players()[0].pose.has_value(); }));
 }
+
+namespace {
+// Ticks three sessions until done().
+bool TickAll(Session& a, Session& b, Session& c, const std::function<bool()>& done) {
+    auto end = std::chrono::steady_clock::now() + 3s;
+    PlayerState s = StateAt(0);
+    while (std::chrono::steady_clock::now() < end) {
+        a.Tick(s);
+        b.Tick(s);
+        c.Tick(s);
+        if (done()) {
+            return true;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    return false;
+}
+} // namespace
+
+TEST(SessionFlags, ClientChangeReachesHostAndIsRelayedToOtherClients) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        return host.Players().size() == 2 && alice.Role() == SessionRole::Connected &&
+               bob.Role() == SessionRole::Connected;
+    }));
+
+    FlagChange opened{ 0x00, 2, 0x05, true }; // a chest in the Deku Tree
+    alice.SendFlagChange(opened);
+
+    std::vector<FlagChange> atHost, atBob, atAlice;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        for (auto& c : host.TakeFlagChanges())
+            atHost.push_back(c);
+        for (auto& c : bob.TakeFlagChanges())
+            atBob.push_back(c);
+        for (auto& c : alice.TakeFlagChanges())
+            atAlice.push_back(c);
+        return !atHost.empty() && !atBob.empty();
+    }));
+    EXPECT_TRUE(atHost[0] == opened);
+    EXPECT_TRUE(atBob[0] == opened);
+    // a few more frames: the sender must not get its own change back
+    TickAll(host, alice, bob, [&] {
+        for (auto& c : alice.TakeFlagChanges())
+            atAlice.push_back(c);
+        return false;
+    });
+    EXPECT_TRUE(atAlice.empty());
+}
+
+TEST(SessionFlags, SnapshotRequestAndAnswer) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Guest")));
+    ASSERT_TRUE(
+        TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Connected; }));
+
+    client.RequestFlagSnapshot();
+    std::vector<PeerId> requests;
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] {
+        requests = host.TakeSnapshotRequests();
+        return !requests.empty();
+    }));
+
+    FlagSnapshot snap;
+    snap.scenes.resize(2);
+    snap.scenes[1][1] = 0x10; // one switch flag in scene 1
+    snap.eventChkInf = { 0xBEEF };
+    host.SendFlagSnapshot(requests[0], snap);
+
+    std::optional<FlagSnapshot> got;
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] {
+        got = client.TakeFlagSnapshot();
+        return got.has_value();
+    }));
+    EXPECT_TRUE(*got == snap);
+}
+
+TEST(SessionFlags, OnlyClientsAskAndOnlyTheHostAnswers) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Guest")));
+    ASSERT_TRUE(
+        TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Connected; }));
+
+    host.RequestFlagSnapshot();                 // host asking: ignored
+    client.SendFlagSnapshot(1, FlagSnapshot{}); // client answering: ignored
+    TickUntil(
+        host, StateAt(0), client, StateAt(0), [] { return false; }, 300ms);
+    EXPECT_TRUE(client.TakeSnapshotRequests().empty());
+    EXPECT_FALSE(host.TakeFlagSnapshot().has_value());
+}

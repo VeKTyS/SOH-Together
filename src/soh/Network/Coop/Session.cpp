@@ -1,6 +1,7 @@
 #include "soh/Network/Coop/Session.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace Coop {
 
@@ -112,6 +113,9 @@ void Session::Stop() {
     mTransport.reset(); // the destructor notifies every peer
     mPlayers.clear();
     mRole = SessionRole::Off;
+    mFlagChangesIn.clear();
+    mFlagSnapshotIn.reset();
+    mSnapshotRequestsIn.clear();
 }
 
 uint16_t Session::Port() const {
@@ -151,28 +155,96 @@ void Session::HandleEvent(TransportEvent& ev) {
             break;
         }
         case TransportEvent::Type::Message: {
-            RemotePlayer* player = Find(ev.peer);
-            if (player == nullptr) {
-                break;
+            if (RemotePlayer* player = Find(ev.peer)) {
+                HandleMessage(*player, ev.payload);
             }
-            std::optional<MessageType> type = PeekType(ev.payload);
-            if (type == MessageType::PlayerState) {
-                if (std::optional<PlayerState> state = DecodePlayerState(ev.payload)) {
-                    player->state = *state;
-                    player->lastStateAt = std::chrono::steady_clock::now();
-                    if (!state->inGame) {
-                        player->pose.reset(); // back on the title screen: nothing to draw
-                    }
-                }
-            } else if (type == MessageType::PlayerPose) {
-                if (std::optional<PlayerPose> pose = DecodePlayerPose(ev.payload)) {
-                    player->pose = *pose;
-                }
-            }
-            // anything else is ignored (shouldn't happen within one protocol version)
             break;
         }
     }
+}
+
+void Session::HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload) {
+    switch (PeekType(payload).value_or(static_cast<MessageType>(0))) {
+        case MessageType::PlayerState:
+            if (std::optional<PlayerState> state = DecodePlayerState(payload)) {
+                from.state = *state;
+                from.lastStateAt = std::chrono::steady_clock::now();
+                if (!state->inGame) {
+                    from.pose.reset(); // back on the title screen: nothing to draw
+                }
+            }
+            break;
+        case MessageType::PlayerPose:
+            if (std::optional<PlayerPose> pose = DecodePlayerPose(payload)) {
+                from.pose = *pose;
+            }
+            break;
+        case MessageType::FlagChange:
+            if (std::optional<FlagChange> change = DecodeFlagChange(payload)) {
+                mFlagChangesIn.push_back(*change);
+                // host: pass it on to the other clients (not back to the sender)
+                if (mRole == SessionRole::Hosting) {
+                    for (const RemotePlayer& other : mPlayers) {
+                        if (other.peer != from.peer) {
+                            SendTo(other.peer, Channel::Ordered, payload);
+                        }
+                    }
+                }
+            }
+            break;
+        case MessageType::FlagSnapshotRequest:
+            if (mRole == SessionRole::Hosting) {
+                mSnapshotRequestsIn.push_back(from.peer);
+            }
+            break;
+        case MessageType::FlagSnapshot:
+            // only the host's flags count
+            if (mRole == SessionRole::Connected) {
+                if (std::optional<FlagSnapshot> snapshot = DecodeFlagSnapshot(payload)) {
+                    mFlagSnapshotIn = std::move(*snapshot);
+                }
+            }
+            break;
+        default:
+            break; // unknown: ignore (shouldn't happen within one protocol version)
+    }
+}
+
+void Session::SendTo(PeerId peer, Channel channel, std::span<const uint8_t> bytes) {
+    if (mTransport) {
+        mTransport->Send(peer, channel, bytes);
+    }
+}
+
+void Session::SendFlagChange(const FlagChange& change) {
+    std::vector<uint8_t> bytes = EncodeFlagChange(change);
+    for (const RemotePlayer& p : mPlayers) {
+        SendTo(p.peer, Channel::Ordered, bytes);
+    }
+}
+
+void Session::RequestFlagSnapshot() {
+    if (mRole == SessionRole::Connected && !mPlayers.empty()) {
+        SendTo(mPlayers[0].peer, Channel::Ordered, EncodeFlagSnapshotRequest());
+    }
+}
+
+void Session::SendFlagSnapshot(PeerId peer, const FlagSnapshot& snapshot) {
+    if (mRole == SessionRole::Hosting) {
+        SendTo(peer, Channel::Ordered, EncodeFlagSnapshot(snapshot));
+    }
+}
+
+std::vector<FlagChange> Session::TakeFlagChanges() {
+    return std::exchange(mFlagChangesIn, {});
+}
+
+std::optional<FlagSnapshot> Session::TakeFlagSnapshot() {
+    return std::exchange(mFlagSnapshotIn, std::nullopt);
+}
+
+std::vector<PeerId> Session::TakeSnapshotRequests() {
+    return std::exchange(mSnapshotRequestsIn, {});
 }
 
 void Session::Tick(const PlayerState& local, const PlayerPose* pose) {
