@@ -330,3 +330,34 @@ TEST(Messages, EnemyHitRoundTrip) {
     bytes.pop_back();
     EXPECT_FALSE(DecodeEnemyHit(bytes).has_value());
 }
+
+TEST(Messages, ItemsRoundTrip) {
+    ItemGiven item{ 1, -5 };
+    std::optional<ItemGiven> outItem = DecodeItemGiven(EncodeItemGiven(item));
+    ASSERT_TRUE(outItem.has_value());
+    EXPECT_TRUE(*outItem == item);
+
+    DungeonItems d{ 3, 0x07, -1 };
+    std::optional<DungeonItems> outD = DecodeDungeonItems(EncodeDungeonItems(d));
+    ASSERT_TRUE(outD.has_value());
+    EXPECT_TRUE(*outD == d);
+
+    std::vector<uint8_t> bad = EncodeItemGiven(item);
+    bad.push_back(0);
+    EXPECT_FALSE(DecodeItemGiven(bad).has_value());
+    EXPECT_FALSE(DecodeDungeonItems(EncodeItemGiven(item)).has_value());
+}
+
+TEST(Messages, FlagSnapshotCarriesTheSaveBlob) {
+    FlagSnapshot in = MakeSnapshot();
+    for (int i = 0; i < 120; i++) {
+        in.saveBlob.push_back(static_cast<uint8_t>(i * 7));
+    }
+    std::optional<FlagSnapshot> out = DecodeFlagSnapshot(EncodeFlagSnapshot(in));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+
+    std::vector<uint8_t> bytes = EncodeFlagSnapshot(in);
+    bytes.pop_back(); // blob shorter than its size says
+    EXPECT_FALSE(DecodeFlagSnapshot(bytes).has_value());
+}

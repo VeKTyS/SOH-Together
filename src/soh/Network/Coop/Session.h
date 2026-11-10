@@ -108,6 +108,12 @@ class Session {
     void SendEnemyHit(const EnemyHit& hit);
     std::vector<EnemyHit> TakeEnemyHits();
 
+    // --- items (relayed by the host, like flags) ---
+    void SendItemGiven(const ItemGiven& item);
+    std::vector<ItemGiven> TakeItemsGiven();
+    void SendDungeonItems(const DungeonItems& items);
+    std::vector<DungeonItems> TakeDungeonItems();
+
   private:
     // host: pass a client's message on to the other clients (not back to the sender)
     void RelayToOthers(PeerId from, std::span<const uint8_t> payload);
@@ -132,6 +138,8 @@ class Session {
     std::vector<EnemyKill> mEnemyKillsIn;
     std::optional<EnemyStates> mEnemyStatesIn;
     std::vector<EnemyHit> mEnemyHitsIn;
+    std::vector<ItemGiven> mItemsIn;
+    std::vector<DungeonItems> mDungeonItemsIn;
 };
 
 } // namespace Coop

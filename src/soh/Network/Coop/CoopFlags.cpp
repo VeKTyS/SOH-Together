@@ -196,6 +196,7 @@ Coop::FlagSnapshot BuildSnapshot() {
     s.itemGetInf.assign(std::begin(gSaveContext.itemGetInf), std::end(gSaveContext.itemGetInf));
     s.infTable.assign(std::begin(gSaveContext.infTable), std::end(gSaveContext.infTable));
     s.randomizerInf.assign(std::begin(gSaveContext.ship.randomizerInf), std::end(gSaveContext.ship.randomizerInf));
+    s.saveBlob = CoopGame::BuildSaveBlob(); // inventory, hearts, magic (CoopItems.cpp)
     return s;
 }
 
@@ -206,7 +207,7 @@ template <typename T, size_t N> bool SameSize(const std::vector<uint16_t>& v, co
 bool ApplySnapshot(const Coop::FlagSnapshot& s) {
     if (s.scenes.size() != ARRAY_COUNT(gSaveContext.sceneFlags) || !SameSize(s.eventChkInf, gSaveContext.eventChkInf) ||
         !SameSize(s.itemGetInf, gSaveContext.itemGetInf) || !SameSize(s.infTable, gSaveContext.infTable) ||
-        !SameSize(s.randomizerInf, gSaveContext.ship.randomizerInf)) {
+        !SameSize(s.randomizerInf, gSaveContext.ship.randomizerInf) || !CoopGame::ApplySaveBlob(s.saveBlob)) {
         SPDLOG_WARN("[Coop] Host's flags don't fit our save layout, ignored");
         return false;
     }

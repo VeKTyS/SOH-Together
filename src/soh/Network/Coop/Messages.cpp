@@ -224,6 +224,10 @@ std::vector<uint8_t> EncodeFlagSnapshot(const FlagSnapshot& s) {
     WriteU16Array(w, s.itemGetInf);
     WriteU16Array(w, s.infTable);
     WriteU16Array(w, s.randomizerInf);
+    w.U16(static_cast<uint16_t>(s.saveBlob.size()));
+    for (uint8_t b : s.saveBlob) {
+        w.U8(b);
+    }
     return w.Take();
 }
 
@@ -242,9 +246,14 @@ std::optional<FlagSnapshot> DecodeFlagSnapshot(std::span<const uint8_t> bytes) {
             r.U32(v);
         }
     }
+    uint16_t blobSize = 0;
     if (!ReadU16Array(r, s.eventChkInf) || !ReadU16Array(r, s.itemGetInf) || !ReadU16Array(r, s.infTable) ||
-        !ReadU16Array(r, s.randomizerInf) || r.Remaining() != 0) {
+        !ReadU16Array(r, s.randomizerInf) || !r.U16(blobSize) || r.Remaining() != blobSize) {
         return std::nullopt;
+    }
+    s.saveBlob.resize(blobSize);
+    for (uint8_t& b : s.saveBlob) {
+        r.U8(b);
     }
     return s;
 }
@@ -405,6 +414,48 @@ std::optional<EnemyHit> DecodeEnemyHit(std::span<const uint8_t> bytes) {
     h.listIndex = static_cast<int16_t>(index);
     h.actorId = static_cast<int16_t>(id);
     return h;
+}
+
+std::vector<uint8_t> EncodeItemGiven(const ItemGiven& item) {
+    ByteWriter w;
+    w.U8(static_cast<uint8_t>(MessageType::ItemGiven));
+    w.U16(item.modId);
+    w.U16(static_cast<uint16_t>(item.getItemId));
+    return w.Take();
+}
+
+std::optional<ItemGiven> DecodeItemGiven(std::span<const uint8_t> bytes) {
+    ByteReader r(bytes);
+    ItemGiven item;
+    uint8_t type = 0;
+    uint16_t id = 0;
+    if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::ItemGiven) || !r.U16(item.modId) || !r.U16(id) ||
+        r.Remaining() != 0) {
+        return std::nullopt;
+    }
+    item.getItemId = static_cast<int16_t>(id);
+    return item;
+}
+
+std::vector<uint8_t> EncodeDungeonItems(const DungeonItems& d) {
+    ByteWriter w;
+    w.U8(static_cast<uint8_t>(MessageType::DungeonItems));
+    w.U16(d.mapIndex);
+    w.U8(d.items);
+    w.U8(static_cast<uint8_t>(d.keys));
+    return w.Take();
+}
+
+std::optional<DungeonItems> DecodeDungeonItems(std::span<const uint8_t> bytes) {
+    ByteReader r(bytes);
+    DungeonItems d;
+    uint8_t type = 0, keys = 0;
+    if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::DungeonItems) || !r.U16(d.mapIndex) ||
+        !r.U8(d.items) || !r.U8(keys) || r.Remaining() != 0) {
+        return std::nullopt;
+    }
+    d.keys = static_cast<int8_t>(keys);
+    return d;
 }
 
 } // namespace Coop

@@ -151,6 +151,7 @@ void OnFrame() {
     CoopGame::UpdatePuppets();
     CoopGame::UpdateFlags();
     CoopGame::UpdateEnemies();
+    CoopGame::UpdateItems();
 }
 
 void SaveCVars() {
@@ -341,6 +342,7 @@ void RegisterCoopFrameHook() {
     CoopGame::RegisterPuppetHooks();
     CoopGame::RegisterFlagHooks();
     CoopGame::RegisterEnemyHooks();
+    CoopGame::RegisterItemHooks();
 }
 
 } // namespace
