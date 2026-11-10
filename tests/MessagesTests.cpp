@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -221,4 +222,111 @@ TEST(Messages, FlagSnapshotWithLyingCountsIsRejected) {
     std::vector<uint8_t> bytes = EncodeFlagSnapshot(s); // 0 scenes, then 4 empty arrays
     bytes[3] = 0xFF;                                    // eventChkInf count = 255, no data behind
     EXPECT_FALSE(DecodeFlagSnapshot(bytes).has_value());
+}
+
+TEST(Messages, EnemyKillRoundTrip) {
+    // negative values on purpose: room -1, params with the top bit set
+    for (EnemyKill k : { EnemyKill{ 0x00, 0, 2, 7, 0x0013, 0x0001 }, EnemyKill{ 0x51, 3, -1, 300, 0x0197, -1 } }) {
+        std::optional<EnemyKill> out = DecodeEnemyKill(EncodeEnemyKill(k));
+        ASSERT_TRUE(out.has_value());
+        EXPECT_TRUE(*out == k);
+    }
+}
+
+TEST(Messages, EnemyKillTruncatedOrPaddedIsRejected) {
+    std::vector<uint8_t> full = EncodeEnemyKill({ 1, 0, 2, 3, 4, 5 });
+    for (size_t len = 0; len < full.size(); len++) {
+        EXPECT_FALSE(DecodeEnemyKill(std::span<const uint8_t>(full.data(), len)).has_value()) << len;
+    }
+    full.push_back(0);
+    EXPECT_FALSE(DecodeEnemyKill(full).has_value());
+    EXPECT_FALSE(DecodeEnemyKill(EncodeFlagChange({})).has_value()); // wrong type
+}
+
+namespace {
+EnemyStates MakeEnemyStates() {
+    EnemyStates s;
+    s.sceneNum = 0x0D;
+    s.layer = 1;
+    EnemyState a;
+    a.room = 3;
+    a.listIndex = 12;
+    a.actorId = 0x0002; // Stalfos
+    a.pos = { 100.5f, -20.0f, 3000.25f };
+    a.focus = { 100.5f, 30.0f, 3000.25f };
+    a.scale = { 0.01f, 0.01f, 0.01f };
+    a.shapeRot = { 0, -16384, 0 };
+    a.worldRot = { 0, -16000, 0 };
+    a.health = 8;
+    a.submitted = 1 | 2 | 4;
+    for (int i = 0; i < 8; i++) {
+        a.quadCorners.push_back({ float(i), float(i * 2), float(-i) });
+    }
+    for (int i = 0; i < 21; i++) {
+        a.joints.push_back({ int16_t(i), int16_t(-i * 100), int16_t(i * 300) });
+    }
+    EnemyState b; // no skeleton, no quads
+    b.room = -1;
+    b.listIndex = 0;
+    b.actorId = 0x0013;
+    s.enemies = { a, b };
+    return s;
+}
+} // namespace
+
+TEST(Messages, EnemyStatesRoundTrip) {
+    EnemyStates in = MakeEnemyStates();
+    std::optional<EnemyStates> out = DecodeEnemyStates(EncodeEnemyStates(in));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+}
+
+TEST(Messages, EnemyStatesEveryTruncationIsRejected) {
+    std::vector<uint8_t> full = EncodeEnemyStates(MakeEnemyStates());
+    for (size_t len = 0; len < full.size(); len++) {
+        EXPECT_FALSE(DecodeEnemyStates(std::span<const uint8_t>(full.data(), len)).has_value()) << len;
+    }
+}
+
+TEST(Messages, EnemyStatesWithBadNumbersIsRejected) {
+    EnemyStates s = MakeEnemyStates();
+    s.enemies[0].pos.y = std::nanf("");
+    EXPECT_FALSE(DecodeEnemyStates(EncodeEnemyStates(s)).has_value());
+    s = MakeEnemyStates();
+    s.enemies[0].quadCorners[5].x = 1e9f;
+    EXPECT_FALSE(DecodeEnemyStates(EncodeEnemyStates(s)).has_value());
+}
+
+// counts that lie about what follows must not make us allocate anything big
+TEST(Messages, EnemyStatesWithLyingCountsIsRejected) {
+    std::vector<uint8_t> tooMany = { static_cast<uint8_t>(MessageType::EnemyStates), 0, 0, 0, 200 };
+    EXPECT_FALSE(DecodeEnemyStates(tooMany).has_value());
+
+    EnemyStates one;
+    one.enemies.resize(1);
+    std::vector<uint8_t> bytes = EncodeEnemyStates(one);
+    bytes.back() = 120; // joint count says 120, nothing behind it
+    EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
+    bytes.back() = 0;
+    bytes[bytes.size() - 2] = 9; // 9 quads, over the limit
+    EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
+}
+
+TEST(Messages, EnemyStatesStaysUnderOnePacketForARoom) {
+    // a busy room: 10 enemies with a 21-limb skeleton
+    EnemyStates s = MakeEnemyStates();
+    s.enemies.resize(1);
+    s.enemies[0].quadCorners.clear();
+    s.enemies.resize(10, s.enemies[0]);
+    EXPECT_LT(EncodeEnemyStates(s).size(), 2000u);
+}
+
+TEST(Messages, EnemyHitRoundTrip) {
+    EnemyHit in{ 0x00, 2, 7, 0x0013, 4, 3, 0x00000200, { 10, -20, 30 } };
+    std::optional<EnemyHit> out = DecodeEnemyHit(EncodeEnemyHit(in));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+    std::vector<uint8_t> bytes = EncodeEnemyHit(in);
+    bytes.pop_back();
+    EXPECT_FALSE(DecodeEnemyHit(bytes).has_value());
 }

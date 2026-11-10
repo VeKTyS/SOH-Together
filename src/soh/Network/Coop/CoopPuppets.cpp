@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <set>
+#include <vector>
 
 extern "C" {
 #include "z64.h"
@@ -309,6 +310,20 @@ void RegisterPuppetHooks() {
     // a scene load wipes all actors, puppets included
     COND_HOOK(OnSceneSpawnActors, true, []() { sRefreshNeeded = true; });
     COND_HOOK(OnPlayerUpdate, true, RespawnPuppetsIfNeeded);
+}
+
+std::vector<Actor*> VisiblePuppets() {
+    std::vector<Actor*> out;
+    if (gPlayState == nullptr) {
+        return out;
+    }
+    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_NPC].head; actor != nullptr; actor = actor->next) {
+        // hidden ones are parked at -9999 (other scene, no pose yet)
+        if (actor->update == Puppet_Update && actor->world.pos.y > -9000.0f) {
+            out.push_back(actor);
+        }
+    }
+    return out;
 }
 
 } // namespace CoopGame

@@ -21,6 +21,17 @@ $src = Join-Path $root "external\Shipwright"
 $build = Join-Path $root "build\soh"
 $inject = (Join-Path $root "cmake\coop-inject.cmake") -replace '\\', '/'
 
+# The few hooks we had to add inside SoH (enemy sync needs to see colliders and
+# skeletons). Applied once; if it's already there git says so and we move on.
+$patch = Join-Path $root "patches\soh-coop-hooks.patch"
+# (through cmd so PowerShell 5 doesn't turn git's stderr into an exception)
+cmd /c "git -C `"$src`" apply --reverse --check `"$patch`" 2>nul"
+if ($LASTEXITCODE) {
+    git -C $src apply $patch
+    if ($LASTEXITCODE) { throw "Could not apply $patch (SoH files changed by hand?)" }
+    Write-Host "Applied patches\soh-coop-hooks.patch"
+}
+
 & $cmake -S $src -B $build -G "Visual Studio 17 2022" -T v143 -A x64 "-DCMAKE_PROJECT_soh_INCLUDE=$inject"
 if ($LASTEXITCODE) { throw "CMake configure failed" }
 

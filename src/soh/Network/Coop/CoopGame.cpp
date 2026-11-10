@@ -150,6 +150,7 @@ void OnFrame() {
     GetSession().Tick(gLocalState, hasPose ? &pose : nullptr);
     CoopGame::UpdatePuppets();
     CoopGame::UpdateFlags();
+    CoopGame::UpdateEnemies();
 }
 
 void SaveCVars() {
@@ -339,6 +340,7 @@ void RegisterCoopFrameHook() {
     COND_HOOK(OnGameFrameUpdate, true, OnFrame);
     CoopGame::RegisterPuppetHooks();
     CoopGame::RegisterFlagHooks();
+    CoopGame::RegisterEnemyHooks();
 }
 
 } // namespace

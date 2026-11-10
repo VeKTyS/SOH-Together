@@ -6,6 +6,9 @@
 #include "soh/Network/Coop/Session.h"
 
 #include <mutex>
+#include <vector>
+
+struct Actor; // the game's actor struct (z64actor.h)
 
 namespace CoopGame {
 
@@ -28,6 +31,9 @@ void UpdatePuppets();
 // Hooks the puppets need, called once at startup (safe to call again).
 void RegisterPuppetHooks();
 
+// The other players' Links standing in our scene right now.
+std::vector<::Actor*> VisiblePuppets();
+
 // --- flags (CoopFlags.cpp) ---
 
 // Call every frame with the session locked, after Session().Tick().
@@ -35,5 +41,11 @@ void UpdateFlags();
 // Client: true once we got the host's flags for the save we're playing.
 bool FlagsSynced();
 void RegisterFlagHooks();
+
+// --- enemies (CoopEnemies.cpp) ---
+
+// Call every frame with the session locked: kills the enemies teammates killed.
+void UpdateEnemies();
+void RegisterEnemyHooks();
 
 } // namespace CoopGame
