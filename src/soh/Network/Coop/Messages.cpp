@@ -58,6 +58,8 @@ std::vector<uint8_t> EncodePlayerState(const PlayerState& s) {
     w.U8(s.colorG);
     w.U8(s.colorB);
     w.U8(s.team);
+    w.U16(static_cast<uint16_t>(s.health));
+    w.U16(static_cast<uint16_t>(s.healthCapacity));
     return w.Take();
 }
 
@@ -65,18 +67,20 @@ std::optional<PlayerState> DecodePlayerState(std::span<const uint8_t> bytes) {
     ByteReader r(bytes);
     PlayerState s;
     uint8_t type = 0, inGame = 0, night = 0;
-    uint16_t scene = 0, room = 0, yaw = 0;
+    uint16_t scene = 0, room = 0, yaw = 0, health = 0, healthCapacity = 0;
     uint32_t entrance = 0;
     if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::PlayerState) || !r.U32(s.frame) || !r.U8(inGame) ||
         inGame > 1 || !r.U16(scene) || !r.U16(room) || !r.U8(s.linkAge) || !ReadFloat(r, s.x) || !ReadFloat(r, s.y) ||
         !ReadFloat(r, s.z) || !r.U16(yaw) || !r.U32(entrance) || !r.U16(s.dayTime) || !r.U8(night) || night > 1 ||
-        !r.U8(s.colorR) || !r.U8(s.colorG) || !r.U8(s.colorB) || !r.U8(s.team) || r.Remaining() != 0) {
+        !r.U8(s.colorR) || !r.U8(s.colorG) || !r.U8(s.colorB) || !r.U8(s.team) || !r.U16(health) || !r.U16(healthCapacity) || r.Remaining() != 0) {
         return std::nullopt;
     }
     if (!IsSaneCoordinate(s.x) || !IsSaneCoordinate(s.y) || !IsSaneCoordinate(s.z)) {
         return std::nullopt;
     }
     s.inGame = inGame == 1;
+    s.health = static_cast<int16_t>(health);
+    s.healthCapacity = static_cast<int16_t>(healthCapacity);
     s.sceneNum = static_cast<int16_t>(scene);
     s.roomNum = static_cast<int16_t>(room);
     s.yaw = static_cast<int16_t>(yaw);

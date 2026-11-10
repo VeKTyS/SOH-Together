@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <functional>
+#include <memory>
+#include <string>
 #include <thread>
 
 using namespace Coop;
@@ -545,4 +547,44 @@ TEST(SessionRelay, EventsReachEveryoneWithTheRealSender) {
         return !fromHost.empty();
     }));
     EXPECT_EQ(fromHost[0].origin, kHostPlayerId);
+}
+
+// voice goes on the lane that can drop packets, the host must relay it too
+TEST(SessionRelay, FastLaneEventsAreRelayedToo) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.SelfId() != 0 && bob.SelfId() != 0; }));
+
+    std::vector<Event> atBob;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        alice.SendEvent(EventKind::Voice, { 7, 7, 7 }, Channel::Snapshot); // can be lost, so keep sending
+        for (auto& e : bob.TakeEvents())
+            atBob.push_back(e);
+        return !atBob.empty();
+    }));
+    EXPECT_EQ(atBob[0].kind, EventKind::Voice);
+    EXPECT_EQ(atBob[0].origin, alice.SelfId());
+}
+
+// Crests of Courage takes 2 to 16 players, we used to stop at 5
+TEST(SessionRelay, SixteenPlayersFit) {
+    Session host;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    std::vector<std::unique_ptr<Session>> clients;
+    for (int i = 0; i < 15; i++) {
+        clients.push_back(std::make_unique<Session>());
+        std::string name = "P" + std::to_string(i);
+        ASSERT_TRUE(clients.back()->Join("127.0.0.1", host.Port(), MakeHello(name.c_str())));
+    }
+    auto end = std::chrono::steady_clock::now() + 5s;
+    PlayerState s = StateAt(0);
+    while (std::chrono::steady_clock::now() < end && host.Players().size() < 15) {
+        host.Tick(s);
+        for (auto& c : clients)
+            c->Tick(s);
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(host.Players().size(), 15u);
 }

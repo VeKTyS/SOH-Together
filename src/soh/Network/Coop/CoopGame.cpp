@@ -97,6 +97,8 @@ Coop::PlayerState ReadLocalState() {
     state.colorG = color.g;
     state.colorB = color.b;
     state.team = CoopGame::OwnTeam();
+    state.health = gSaveContext.health;
+    state.healthCapacity = gSaveContext.healthCapacity;
     return state;
 }
 
@@ -161,6 +163,34 @@ void FollowHostTime() {
         gSaveContext.skyboxTime = host->dayTime;
         gSaveContext.nightFlag = host->night ? 1 : 0;
     }
+}
+
+// Blocks other feature files add to the Co-op menu (see CoopGame.h)
+struct MenuSection {
+    CoopGame::MenuWhere where;
+    std::function<void()> draw;
+};
+std::map<std::string, MenuSection>& MenuSections() {
+    static std::map<std::string, MenuSection> sections;
+    return sections;
+}
+
+void DrawMenuSections(bool notConnected) {
+    for (auto& [name, section] : MenuSections()) {
+        bool show = section.where == CoopGame::MenuWhere::Always ||
+                    (notConnected ? section.where == CoopGame::MenuWhere::NotConnected
+                                  : section.where == CoopGame::MenuWhere::InSession);
+        if (show) {
+            ImGui::PushID(name.c_str());
+            section.draw();
+            ImGui::PopID();
+        }
+    }
+}
+
+std::map<std::string, std::function<void()>>& BeforeJoinCallbacks() {
+    static std::map<std::string, std::function<void()>> callbacks;
+    return callbacks;
 }
 
 // Feature files' frame and event callbacks (see CoopGame.h)
@@ -365,9 +395,7 @@ void DrawOff(Coop::Session& session) {
     ImGui::BeginDisabled(name.empty());
     uint16_t port = static_cast<uint16_t>(CVarGetInteger(CVAR_COOP("Port"), Coop::kDefaultPort));
     if (UIWidgets::Button("Host a game", UIWidgets::ButtonOptions().Color(THEME_COLOR))) {
-        if (session.Host(port, MakeHello())) {
-            gHostAddresses = Coop::LocalIPv4Addresses();
-        }
+        CoopGame::StartHost(port);
     }
 
     ImGui::SeparatorText("Or join a friend");
@@ -385,10 +413,11 @@ void DrawOff(Coop::Session& session) {
     }
     ImGui::BeginDisabled(!addressOk);
     if (UIWidgets::Button("Join", UIWidgets::ButtonOptions().Color(THEME_COLOR))) {
-        session.Join(host, joinPort, MakeHello());
+        CoopGame::StartJoin(host, joinPort);
     }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
+    DrawMenuSections(true);
 
     // why the last attempt failed, right where you'll try again
     if (!session.LastError().empty()) {
@@ -417,6 +446,7 @@ void DrawHosting(Coop::Session& session) {
 
     DrawOwnLook();
     CoopGame::DrawRoomSettings();
+    DrawMenuSections(false);
     ImGui::SeparatorText("Players");
     if (session.Players().empty()) {
         ImGui::TextDisabled("Nobody yet...");
@@ -449,6 +479,7 @@ void DrawClient(Coop::Session& session) {
         if (gLocalState.inGame && UIWidgets::Button("Get the host's world again", UIWidgets::ButtonOptions())) {
             CoopGame::RequestResync();
         }
+        DrawMenuSections(false);
         for (const Coop::RemotePlayer& p : session.Players()) {
             DrawPlayer(p);
         }
@@ -536,11 +567,38 @@ void OnEvent(Coop::EventKind kind, const std::string& name, std::function<void(c
     EventHandlers()[kind][name] = std::move(fn);
 }
 
-void SendEvent(Coop::EventKind kind, std::vector<uint8_t> data) {
+void SendEvent(Coop::EventKind kind, std::vector<uint8_t> data, Coop::Channel channel) {
     std::lock_guard lock(Mutex());
     if (SessionActive()) {
-        GetSession().SendEvent(kind, std::move(data));
+        GetSession().SendEvent(kind, std::move(data), channel);
     }
+}
+
+void AddMenuSection(const std::string& name, MenuWhere where, std::function<void()> draw) {
+    std::lock_guard lock(Mutex());
+    MenuSections()[name] = { where, std::move(draw) };
+}
+
+void OnBeforeJoin(const std::string& name, std::function<void()> fn) {
+    std::lock_guard lock(Mutex());
+    BeforeJoinCallbacks()[name] = std::move(fn);
+}
+
+bool StartHost(uint16_t port) {
+    std::lock_guard lock(Mutex());
+    if (!GetSession().Host(port, MakeHello())) {
+        return false;
+    }
+    gHostAddresses = Coop::LocalIPv4Addresses();
+    return true;
+}
+
+bool StartJoin(const std::string& host, uint16_t port) {
+    std::lock_guard lock(Mutex());
+    for (auto& [name, fn] : BeforeJoinCallbacks()) {
+        fn();
+    }
+    return GetSession().Join(host, port, MakeHello());
 }
 
 uint32_t SelfId() {

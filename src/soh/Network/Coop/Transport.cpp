@@ -353,4 +353,12 @@ uint32_t Transport::RoundTripMs(PeerId peer) const {
     return it == mPeers.end() ? 0 : it->second.enet->lastRoundTripTime;
 }
 
+uint64_t Transport::BytesSent() const {
+    return mHost->totalSentData;
+}
+
+uint64_t Transport::BytesReceived() const {
+    return mHost->totalReceivedData;
+}
+
 } // namespace Coop

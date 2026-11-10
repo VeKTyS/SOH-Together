@@ -80,6 +80,10 @@ class Session {
         return mLastError;
     }
     uint16_t Port() const; // listening port when hosting, 0 otherwise
+    // Ping to a player in ms. Only direct peers (the host, or everyone when we host), 0 otherwise.
+    uint32_t RoundTripMs(const RemotePlayer& player) const;
+    uint64_t BytesSent() const;
+    uint64_t BytesReceived() const;
 
     // Our player id: kHostPlayerId when hosting, the one the host gave us once
     // connected, 0 before that.
@@ -91,7 +95,8 @@ class Session {
     // --- small gameplay events (see EventKind) ---
     // Sent to everyone (the host passes it on). The game file that owns the kind
     // decides what's in `data`.
-    void SendEvent(EventKind kind, std::vector<uint8_t> data);
+    // channel: Ordered for almost everything, Snapshot for stuff that can be lost (voice)
+    void SendEvent(EventKind kind, std::vector<uint8_t> data, Channel channel = Channel::Ordered);
     std::vector<Event> TakeEvents();
 
     // --- flags (chests, switches, story events...) ---
@@ -148,6 +153,7 @@ class Session {
 
     void HandleEvent(TransportEvent& ev);
     void HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload);
+    Channel mInChannel = Channel::Ordered; // lane of the message being handled, events are relayed on it
     // host: pass a client's state / pose on to the other clients
     void Forward(const RemotePlayer& from, std::span<const uint8_t> payload);
     void SendTo(PeerId peer, Channel channel, std::span<const uint8_t> bytes);

@@ -78,6 +78,7 @@ bool Session::Host(uint16_t port, const Hello& local) {
     Stop();
     TransportConfig config;
     config.localHello = local;
+    config.maxPeers = kMaxPlayers - 1; // 2 to 16 players like Crests of Courage
     mTransport = Transport::Listen(port, config);
     if (!mTransport) {
         mLastError = "Cannot open UDP port " + std::to_string(port) + " (already in use?)";
@@ -131,6 +132,18 @@ void Session::Stop() {
 
 uint16_t Session::Port() const {
     return mRole == SessionRole::Hosting && mTransport ? mTransport->LocalPort() : 0;
+}
+
+uint32_t Session::RoundTripMs(const RemotePlayer& player) const {
+    return mTransport && !player.relayed ? mTransport->RoundTripMs(player.peer) : 0;
+}
+
+uint64_t Session::BytesSent() const {
+    return mTransport ? mTransport->BytesSent() : 0;
+}
+
+uint64_t Session::BytesReceived() const {
+    return mTransport ? mTransport->BytesReceived() : 0;
 }
 
 RemotePlayer* Session::Find(PeerId peer) {
@@ -201,6 +214,7 @@ void Session::HandleEvent(TransportEvent& ev) {
         }
         case TransportEvent::Type::Message: {
             if (RemotePlayer* player = Find(ev.peer)) {
+                mInChannel = ev.channel;
                 HandleMessage(*player, ev.payload);
             }
             break;
@@ -262,7 +276,7 @@ void Session::HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload
             if (std::optional<Event> e = DecodeEvent(payload)) {
                 if (mRole == SessionRole::Hosting) {
                     e->origin = from.id; // the host knows who sent it, don't trust the packet
-                    RelayToOthers(from.peer, EncodeEvent(*e));
+                    RelayToOthers(from.peer, EncodeEvent(*e), mInChannel);
                 }
                 mEventsIn.push_back(std::move(*e));
             }
@@ -355,7 +369,7 @@ void Session::Forward(const RemotePlayer& from, std::span<const uint8_t> payload
     RelayToOthers(from.peer, EncodeForwarded(f), Channel::Snapshot);
 }
 
-void Session::SendEvent(EventKind kind, std::vector<uint8_t> data) {
+void Session::SendEvent(EventKind kind, std::vector<uint8_t> data, Channel channel) {
     if (data.size() > kMaxEventData || mSelfId == 0) {
         return;
     }
@@ -363,7 +377,7 @@ void Session::SendEvent(EventKind kind, std::vector<uint8_t> data) {
     e.origin = mSelfId;
     e.kind = kind;
     e.data = std::move(data);
-    SendToAll(Channel::Ordered, EncodeEvent(e));
+    SendToAll(channel, EncodeEvent(e));
 }
 
 std::vector<Event> Session::TakeEvents() {

@@ -27,7 +27,8 @@ inline constexpr uint32_t kHelloMagic = 0x54484F53;
 // 8: ThingStates (carried / thrown things, bombs)
 // 9: player ids + clients see each other (Welcome / Forwarded / PeerLeft),
 //    generic Event, player color / team, full Link rotation
-inline constexpr uint16_t kProtocolVersion = 9;
+inline constexpr uint16_t kProtocolVersion = 10;
+inline constexpr size_t kMaxPlayers = 16; // host included
 
 // 32 bytes, not 32 letters: an "é" takes 2 bytes.
 inline constexpr size_t kMaxNameBytes = 32;

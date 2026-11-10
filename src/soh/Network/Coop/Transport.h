@@ -99,6 +99,9 @@ class Transport {
     // 500 ms and starts at a default of 500 ms, so the first second is not
     // meaningful. 0 for an unknown peer.
     uint32_t RoundTripMs(PeerId peer) const;
+    // Everything sent / received since this transport started, in bytes (for the Network tab)
+    uint64_t BytesSent() const;
+    uint64_t BytesReceived() const;
 
     // ENet's disconnect payload is a single integer: reason in the low byte,
     // handshake error in the next one. Exposed for tests and diagnostics.

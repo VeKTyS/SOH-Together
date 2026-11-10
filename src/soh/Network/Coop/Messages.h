@@ -89,6 +89,11 @@ enum class EventKind : uint8_t {
     Warp = 18,              // warp together (TrueCoop CoopWarp)
     Resync = 19,            // "send me everything again" (Anchor RequestTeamState button)
     EnemyRoster = 20,       // which enemies are still alive (TrueCoop EnemyRoster)
+    Chat = 21,              // text chat (Crests of Courage chat.cpp)
+    SkipVote = 22,          // vote to skip a cutscene (Crests of Courage skipvote.cpp)
+    Voice = 23,             // a voice chat frame, sent on the fast lane (Crests of Courage voice.cpp)
+    DeathLink = 24,         // "I died, everybody dies" (Crests of Courage death link)
+    SaveBackup = 25,        // reserved for join / save stuff (Crests of Courage join_sync.cpp)
     Custom1 = 40,           // free for later features
     Custom2 = 41,
     Custom3 = 42,
@@ -292,6 +297,9 @@ struct PlayerState {
     // the player's color (tunic tint + minimap arrow), picked in the menu. Same idea as Anchor's
     uint8_t colorR = 100, colorG = 255, colorB = 100;
     uint8_t team = 0; // Anchor's teams (PvP / who sees who on the map)
+    // hearts, for the name tags / party HUD (Crests of Courage party_hud). 16 = one heart
+    int16_t health = 0;
+    int16_t healthCapacity = 0;
 };
 
 // Link's skeleton has 22 limbs + 2 extra slots the animation code uses.

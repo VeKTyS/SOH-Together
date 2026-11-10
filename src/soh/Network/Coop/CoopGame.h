@@ -40,7 +40,27 @@ void OnEveryFrame(const std::string& name, std::function<void()> fn);
 // Called (session locked) for every event of that kind a teammate sent us.
 void OnEvent(Coop::EventKind kind, const std::string& name, std::function<void(const Coop::Event&)> fn);
 // Send an event to everyone else. Safe to call from any hook (locks itself).
-void SendEvent(Coop::EventKind kind, std::vector<uint8_t> data);
+// Snapshot channel = may be lost but never waits (voice).
+void SendEvent(Coop::EventKind kind, std::vector<uint8_t> data, Coop::Channel channel = Coop::Channel::Ordered);
+
+// --- menu / connect plumbing (Crests of Courage features) ---
+enum class MenuWhere : uint8_t {
+    NotConnected, // under the Host / Join buttons
+    InSession,    // hosting or connected, under the room settings
+    Always,       // both
+};
+// Adds a block to the Co-op menu. Drawn with the session locked. Same name again replaces it.
+void AddMenuSection(const std::string& name, MenuWhere where, std::function<void()> draw);
+// Start hosting / joining like the menu buttons do (our name, build, seed...). Join runs
+// the OnBeforeJoin callbacks first (save backup). Session locked inside.
+bool StartHost(uint16_t port);
+bool StartJoin(const std::string& host, uint16_t port);
+void OnBeforeJoin(const std::string& name, std::function<void()> fn);
+
+// --- notifications (CoopNotify.cpp, Crests of Courage notify.cpp) ---
+enum class NoticeKind : uint8_t { Item, Players, Randomizer, Teleport, Other };
+// Shows a pop-up on screen (queued, stacked). Any thread, locks itself.
+void Notify(NoticeKind kind, const std::string& text);
 // Our player id (same numbers as RemotePlayer::id / Event::origin), 0 if none yet.
 uint32_t SelfId();
 // Hosting or connected.

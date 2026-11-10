@@ -100,6 +100,16 @@ TEST(Messages, CoordinateLimitIsInclusive) {
     EXPECT_TRUE(DecodePlayerState(EncodePlayerState(s)).has_value());
 }
 
+TEST(Messages, HealthRoundTrip) {
+    PlayerState s = MakeState();
+    s.health = 0x30;
+    s.healthCapacity = 0x140;
+    std::optional<PlayerState> out = DecodePlayerState(EncodePlayerState(s));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->health, 0x30);
+    EXPECT_EQ(out->healthCapacity, 0x140);
+}
+
 TEST(Messages, TimeOfDayRoundTrip) {
     PlayerState s = MakeState();
     s.dayTime = 0xC123;
@@ -109,7 +119,7 @@ TEST(Messages, TimeOfDayRoundTrip) {
     EXPECT_EQ(out->dayTime, 0xC123);
     EXPECT_TRUE(out->night);
     std::vector<uint8_t> bad = EncodePlayerState(s);
-    bad[bad.size() - 5] = 2; // night is 0 or 1 (followed by color r,g,b and team)
+    bad[bad.size() - 9] = 2; // night is 0 or 1 (followed by color r,g,b, team and 2 health u16)
     EXPECT_FALSE(DecodePlayerState(bad).has_value());
 }
 
