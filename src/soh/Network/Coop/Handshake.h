@@ -21,7 +21,8 @@ inline constexpr uint32_t kHelloMagic = 0x54484F53;
 // 2: PlayerState got entranceIndex (for teleporting)
 // 3: new PlayerPose message (to draw the other Link)
 // 4: flag sync messages (FlagChange, FlagSnapshotRequest, FlagSnapshot)
-inline constexpr uint16_t kProtocolVersion = 4;
+// 5: EnemyKilled
+inline constexpr uint16_t kProtocolVersion = 5;
 
 // 32 bytes, not 32 letters: an "é" takes 2 bytes.
 inline constexpr size_t kMaxNameBytes = 32;

@@ -288,3 +288,127 @@ TEST(SessionFlags, OnlyClientsAskAndOnlyTheHostAnswers) {
     EXPECT_TRUE(client.TakeSnapshotRequests().empty());
     EXPECT_FALSE(host.TakeFlagSnapshot().has_value());
 }
+
+TEST(SessionEnemies, KillReachesHostAndIsRelayedButNotEchoed) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        return host.Players().size() == 2 && alice.Role() == SessionRole::Connected &&
+               bob.Role() == SessionRole::Connected;
+    }));
+
+    EnemyKill keese{ 0x00, 0, 1, 4, 0x0013, 0x0002 };
+    bob.SendEnemyKill(keese);
+
+    std::vector<EnemyKill> atHost, atAlice, atBob;
+    auto collect = [&] {
+        for (auto& k : host.TakeEnemyKills())
+            atHost.push_back(k);
+        for (auto& k : alice.TakeEnemyKills())
+            atAlice.push_back(k);
+        for (auto& k : bob.TakeEnemyKills())
+            atBob.push_back(k);
+    };
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        collect();
+        return !atHost.empty() && !atAlice.empty();
+    }));
+    EXPECT_TRUE(atHost[0] == keese);
+    EXPECT_TRUE(atAlice[0] == keese);
+    TickAll(host, alice, bob, [&] {
+        collect();
+        return false;
+    });
+    EXPECT_TRUE(atBob.empty());
+    EXPECT_EQ(atHost.size(), 1u);
+    EXPECT_EQ(atAlice.size(), 1u);
+}
+
+TEST(SessionEnemies, HostKillReachesEveryClient) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        return host.Players().size() == 2 && alice.Role() == SessionRole::Connected &&
+               bob.Role() == SessionRole::Connected;
+    }));
+    host.SendEnemyKill({ 0x01, 0, 0, 9, 0x0025, 0 });
+    size_t gotAlice = 0, gotBob = 0;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        gotAlice += alice.TakeEnemyKills().size();
+        gotBob += bob.TakeEnemyKills().size();
+        return gotAlice == 1 && gotBob == 1;
+    }));
+}
+
+TEST(SessionEnemies, HostStatesReachClientAndClientHitsReachHost) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Guest")));
+    ASSERT_TRUE(
+        TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Connected; }));
+
+    EnemyStates states;
+    states.sceneNum = 5;
+    states.enemies.resize(2);
+    states.enemies[1].listIndex = 4;
+    states.enemies[1].health = 3;
+    std::optional<EnemyStates> got;
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] {
+        host.SendEnemyStates(states); // sent every frame like in the game
+        if (auto s = client.TakeEnemyStates()) {
+            got = s;
+        }
+        return got.has_value();
+    }));
+    EXPECT_TRUE(*got == states);
+
+    EnemyHit hit{ 5, 0, 4, 0, 2, 1, 0x1, { 1, 2, 3 } };
+    client.SendEnemyHit(hit);
+    std::vector<EnemyHit> hits;
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] {
+        for (auto& h : host.TakeEnemyHits())
+            hits.push_back(h);
+        return !hits.empty();
+    }));
+    EXPECT_TRUE(hits[0] == hit);
+}
+
+TEST(SessionEnemies, OnlyTheHostSendsStates) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Guest")));
+    ASSERT_TRUE(
+        TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Connected; }));
+    EnemyStates states;
+    states.enemies.resize(1);
+    client.SendEnemyStates(states); // a client doesn't run enemies: ignored
+    bool anything = false;
+    TickUntil(
+        host, StateAt(0), client, StateAt(0),
+        [&] {
+            anything = anything || host.TakeEnemyStates().has_value();
+            return false;
+        },
+        300ms);
+    EXPECT_FALSE(anything);
+}
+
+TEST(SessionEnemies, HostHitsReachClientsForSharedHealth) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Guest")));
+    ASSERT_TRUE(
+        TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Connected; }));
+    host.SendEnemyHit({ 0x11, 0, 3, 0x28, 2, 0, 0, {} }); // a boss losing 2 health on the host
+    std::vector<EnemyHit> got;
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] {
+        for (auto& h : client.TakeEnemyHits())
+            got.push_back(h);
+        return !got.empty();
+    }));
+    EXPECT_EQ(got[0].damage, 2);
+}

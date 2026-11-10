@@ -95,7 +95,24 @@ class Session {
     std::optional<FlagSnapshot> TakeFlagSnapshot();
     std::vector<PeerId> TakeSnapshotRequests();
 
+    // --- enemies ---
+    // We killed an enemy: tell everyone (host relays, like flags).
+    void SendEnemyKill(const EnemyKill& kill);
+    std::vector<EnemyKill> TakeEnemyKills();
+    // Host only: where our enemies are this frame (clients copy them).
+    void SendEnemyStates(const EnemyStates& states);
+    // Client: the newest enemy states from the host (older ones are dropped).
+    std::optional<EnemyStates> TakeEnemyStates();
+    // We hit an enemy someone else runs (client -> host), or an enemy whose
+    // health we share (bosses). Relayed by the host like kills.
+    void SendEnemyHit(const EnemyHit& hit);
+    std::vector<EnemyHit> TakeEnemyHits();
+
   private:
+    // host: pass a client's message on to the other clients (not back to the sender)
+    void RelayToOthers(PeerId from, std::span<const uint8_t> payload);
+    void SendToAll(Channel channel, std::span<const uint8_t> bytes);
+
     void HandleEvent(TransportEvent& ev);
     void HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload);
     void SendTo(PeerId peer, Channel channel, std::span<const uint8_t> bytes);
@@ -112,6 +129,9 @@ class Session {
     std::vector<FlagChange> mFlagChangesIn;
     std::optional<FlagSnapshot> mFlagSnapshotIn;
     std::vector<PeerId> mSnapshotRequestsIn;
+    std::vector<EnemyKill> mEnemyKillsIn;
+    std::optional<EnemyStates> mEnemyStatesIn;
+    std::vector<EnemyHit> mEnemyHitsIn;
 };
 
 } // namespace Coop

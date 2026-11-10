@@ -116,6 +116,9 @@ void Session::Stop() {
     mFlagChangesIn.clear();
     mFlagSnapshotIn.reset();
     mSnapshotRequestsIn.clear();
+    mEnemyKillsIn.clear();
+    mEnemyStatesIn.reset();
+    mEnemyHitsIn.clear();
 }
 
 uint16_t Session::Port() const {
@@ -182,14 +185,27 @@ void Session::HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload
         case MessageType::FlagChange:
             if (std::optional<FlagChange> change = DecodeFlagChange(payload)) {
                 mFlagChangesIn.push_back(*change);
-                // host: pass it on to the other clients (not back to the sender)
-                if (mRole == SessionRole::Hosting) {
-                    for (const RemotePlayer& other : mPlayers) {
-                        if (other.peer != from.peer) {
-                            SendTo(other.peer, Channel::Ordered, payload);
-                        }
-                    }
+                RelayToOthers(from.peer, payload);
+            }
+            break;
+        case MessageType::EnemyKilled:
+            if (std::optional<EnemyKill> kill = DecodeEnemyKill(payload)) {
+                mEnemyKillsIn.push_back(*kill);
+                RelayToOthers(from.peer, payload);
+            }
+            break;
+        case MessageType::EnemyStates:
+            // only the host runs the enemies
+            if (mRole == SessionRole::Connected) {
+                if (std::optional<EnemyStates> states = DecodeEnemyStates(payload)) {
+                    mEnemyStatesIn = std::move(*states);
                 }
+            }
+            break;
+        case MessageType::EnemyHit:
+            if (std::optional<EnemyHit> hit = DecodeEnemyHit(payload)) {
+                mEnemyHitsIn.push_back(*hit);
+                RelayToOthers(from.peer, payload);
             }
             break;
         case MessageType::FlagSnapshotRequest:
@@ -216,11 +232,51 @@ void Session::SendTo(PeerId peer, Channel channel, std::span<const uint8_t> byte
     }
 }
 
-void Session::SendFlagChange(const FlagChange& change) {
-    std::vector<uint8_t> bytes = EncodeFlagChange(change);
-    for (const RemotePlayer& p : mPlayers) {
-        SendTo(p.peer, Channel::Ordered, bytes);
+void Session::RelayToOthers(PeerId from, std::span<const uint8_t> payload) {
+    if (mRole != SessionRole::Hosting) {
+        return;
     }
+    for (const RemotePlayer& other : mPlayers) {
+        if (other.peer != from) {
+            SendTo(other.peer, Channel::Ordered, payload);
+        }
+    }
+}
+
+void Session::SendToAll(Channel channel, std::span<const uint8_t> bytes) {
+    for (const RemotePlayer& p : mPlayers) {
+        SendTo(p.peer, channel, bytes);
+    }
+}
+
+void Session::SendFlagChange(const FlagChange& change) {
+    SendToAll(Channel::Ordered, EncodeFlagChange(change));
+}
+
+void Session::SendEnemyKill(const EnemyKill& kill) {
+    SendToAll(Channel::Ordered, EncodeEnemyKill(kill));
+}
+
+std::vector<EnemyKill> Session::TakeEnemyKills() {
+    return std::exchange(mEnemyKillsIn, {});
+}
+
+void Session::SendEnemyStates(const EnemyStates& states) {
+    if (mRole == SessionRole::Hosting) {
+        SendToAll(Channel::Snapshot, EncodeEnemyStates(states));
+    }
+}
+
+std::optional<EnemyStates> Session::TakeEnemyStates() {
+    return std::exchange(mEnemyStatesIn, std::nullopt);
+}
+
+void Session::SendEnemyHit(const EnemyHit& hit) {
+    SendToAll(Channel::Ordered, EncodeEnemyHit(hit));
+}
+
+std::vector<EnemyHit> Session::TakeEnemyHits() {
+    return std::exchange(mEnemyHitsIn, {});
 }
 
 void Session::RequestFlagSnapshot() {

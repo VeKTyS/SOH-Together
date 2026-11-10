@@ -1,0 +1,165 @@
+diff --git a/soh/soh/Enhancements/game-interactor/GameInteractor_HookTable.h b/soh/soh/Enhancements/game-interactor/GameInteractor_HookTable.h
+index a3ee672f9..bc672f44c 100644
+--- a/soh/soh/Enhancements/game-interactor/GameInteractor_HookTable.h
++++ b/soh/soh/Enhancements/game-interactor/GameInteractor_HookTable.h
+@@ -43,6 +43,10 @@ DEFINE_HOOK(ShouldActorDestroy, (void* actor, bool* result));
+ DEFINE_HOOK(OnActorDestroy, (void* actor));
+ DEFINE_HOOK(OnEnemyDefeat, (void* actor));
+ DEFINE_HOOK(OnBossDefeat, (void* actor));
++// co-op: lets a mod know an actor's colliders and skeleton, and which colliders it hands to the collision check
++DEFINE_HOOK(OnColliderSetup, (void* actor, void* collider));
++DEFINE_HOOK(OnColliderSubmit, (void* collider, uint8_t kind));
++DEFINE_HOOK(OnSkelAnimeInit, (void* skelAnime));
+ DEFINE_HOOK(OnTimestamp, (u8 item));
+ DEFINE_HOOK(OnPlayerBonk, ());
+ DEFINE_HOOK(OnPlayerSetModels, (Player * player, u8 modelGroup));
+diff --git a/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.cpp b/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.cpp
+index 3b5d1f74f..f63b05141 100644
+--- a/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.cpp
++++ b/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.cpp
+@@ -207,6 +207,18 @@ void GameInteractor_ExecuteOnBossDefeat(void* actor) {
+     GameInteractor::Instance->ExecuteHooksForFilter<GameInteractor::OnBossDefeat>(actor);
+ }
+ 
++void GameInteractor_ExecuteOnColliderSetup(void* actor, void* collider) {
++    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnColliderSetup>(actor, collider);
++}
++
++void GameInteractor_ExecuteOnColliderSubmit(void* collider, uint8_t kind) {
++    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnColliderSubmit>(collider, kind);
++}
++
++void GameInteractor_ExecuteOnSkelAnimeInit(void* skelAnime) {
++    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnSkelAnimeInit>(skelAnime);
++}
++
+ void GameInteractor_ExecuteOnTimestamp(u8 item) {
+     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnTimestamp>(item);
+ }
+diff --git a/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.h b/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.h
+index 7ce3037b8..b38ee03cb 100644
+--- a/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.h
++++ b/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.h
+@@ -43,6 +43,10 @@ bool GameInteractor_ShouldActorDestroy(void* actor);
+ void GameInteractor_ExecuteOnActorDestroy(void* actor);
+ void GameInteractor_ExecuteOnEnemyDefeat(void* actor);
+ void GameInteractor_ExecuteOnBossDefeat(void* actor);
++void GameInteractor_ExecuteOnColliderSetup(void* actor, void* collider);
++// kind: 0 = AT (hits things), 1 = AC (can be hit), 2 = OC (pushes things)
++void GameInteractor_ExecuteOnColliderSubmit(void* collider, uint8_t kind);
++void GameInteractor_ExecuteOnSkelAnimeInit(void* skelAnime);
+ void GameInteractor_ExecuteOnTimestamp(u8 item);
+ void GameInteractor_ExecuteOnPlayerBonk();
+ void GameInteractor_ExecuteOnPlayerSetModels(Player* player, u8 modelGroup);
+diff --git a/soh/src/code/z_collision_check.c b/soh/src/code/z_collision_check.c
+index be81fcca0..8bcc521a1 100644
+--- a/soh/src/code/z_collision_check.c
++++ b/soh/src/code/z_collision_check.c
+@@ -2,6 +2,7 @@
+ #include "vt.h"
+ #include "overlays/effects/ovl_Effect_Ss_HitMark/z_eff_ss_hitmark.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor.h"
++#include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
+ #include <assert.h>
+ #include <libultraship/bridge/consolevariablebridge.h>
+ 
+@@ -126,6 +127,7 @@ s32 Collider_SetBaseToActor(PlayState* play, Collider* collider, ColliderInitToA
+     collider->ocFlags1 = src->ocFlags1;
+     collider->ocFlags2 = OC2_TYPE_1;
+     collider->shape = src->shape;
++    GameInteractor_ExecuteOnColliderSetup(collider->actor, collider);
+     return 1;
+ }
+ 
+@@ -140,6 +142,7 @@ s32 Collider_SetBaseType1(PlayState* play, Collider* collider, Actor* actor, Col
+     collider->ocFlags1 = src->ocFlags1;
+     collider->ocFlags2 = OC2_TYPE_1;
+     collider->shape = src->shape;
++    GameInteractor_ExecuteOnColliderSetup(collider->actor, collider);
+     return 1;
+ }
+ 
+@@ -151,6 +154,7 @@ s32 Collider_SetBase(PlayState* play, Collider* collider, Actor* actor, Collider
+     collider->ocFlags1 = src->ocFlags1;
+     collider->ocFlags2 = src->ocFlags2;
+     collider->shape = src->shape;
++    GameInteractor_ExecuteOnColliderSetup(collider->actor, collider);
+     return 1;
+ }
+ 
+@@ -1179,6 +1183,7 @@ s32 CollisionCheck_SetAT(PlayState* play, CollisionCheckContext* colChkCtx, Coll
+     if (GameInteractor_SecondCollisionUpdate()) {
+         return -1;
+     }
++    GameInteractor_ExecuteOnColliderSubmit(collider, 0);
+ 
+     if (FrameAdvance_IsEnabled(play) == true) {
+         return -1;
+@@ -1212,6 +1217,7 @@ s32 CollisionCheck_SetAT_SAC(PlayState* play, CollisionCheckContext* colChkCtx,
+     if (GameInteractor_SecondCollisionUpdate()) {
+         return -1;
+     }
++    GameInteractor_ExecuteOnColliderSubmit(collider, 0);
+ 
+     if (FrameAdvance_IsEnabled(play) == true) {
+         return -1;
+@@ -1257,6 +1263,7 @@ s32 CollisionCheck_SetAC(PlayState* play, CollisionCheckContext* colChkCtx, Coll
+     if (GameInteractor_SecondCollisionUpdate()) {
+         return -1;
+     }
++    GameInteractor_ExecuteOnColliderSubmit(collider, 1);
+ 
+     if (FrameAdvance_IsEnabled(play) == true) {
+         return -1;
+@@ -1290,6 +1297,7 @@ s32 CollisionCheck_SetAC_SAC(PlayState* play, CollisionCheckContext* colChkCtx,
+     if (GameInteractor_SecondCollisionUpdate()) {
+         return -1;
+     }
++    GameInteractor_ExecuteOnColliderSubmit(collider, 1);
+ 
+     if (FrameAdvance_IsEnabled(play) == true) {
+         return -1;
+@@ -1335,6 +1343,7 @@ s32 CollisionCheck_SetOC(PlayState* play, CollisionCheckContext* colChkCtx, Coll
+     if (GameInteractor_SecondCollisionUpdate()) {
+         return -1;
+     }
++    GameInteractor_ExecuteOnColliderSubmit(collider, 2);
+ 
+     if (FrameAdvance_IsEnabled(play) == true) {
+         return -1;
+@@ -1369,6 +1378,7 @@ s32 CollisionCheck_SetOC_SAC(PlayState* play, CollisionCheckContext* colChkCtx,
+     if (GameInteractor_SecondCollisionUpdate()) {
+         return -1;
+     }
++    GameInteractor_ExecuteOnColliderSubmit(collider, 2);
+ 
+     if (FrameAdvance_IsEnabled(play) == true) {
+         return -1;
+diff --git a/soh/src/code/z_skelanime.c b/soh/src/code/z_skelanime.c
+index e48259e15..e3b4318f1 100644
+--- a/soh/src/code/z_skelanime.c
++++ b/soh/src/code/z_skelanime.c
+@@ -1473,6 +1473,7 @@ s32 SkelAnime_Init(PlayState* play, SkelAnime* skelAnime, SkeletonHeader* skelet
+     if (animation != NULL) {
+         Animation_PlayLoop(skelAnime, animation);
+     }
++    GameInteractor_ExecuteOnSkelAnimeInit(skelAnime);
+ }
+ 
+ /**
+@@ -1509,6 +1510,7 @@ s32 SkelAnime_InitFlex(PlayState* play, SkelAnime* skelAnime, FlexSkeletonHeader
+     if (animation != NULL) {
+         Animation_PlayLoop(skelAnime, animation);
+     }
++    GameInteractor_ExecuteOnSkelAnimeInit(skelAnime);
+ }
+ 
+ /**
+@@ -1536,6 +1538,7 @@ s32 SkelAnime_InitSkin(PlayState* play, SkelAnime* skelAnime, SkeletonHeader* sk
+     if (animation != NULL) {
+         Animation_PlayLoop(skelAnime, animation);
+     }
++    GameInteractor_ExecuteOnSkelAnimeInit(skelAnime);
+ }
+ 
+ /**

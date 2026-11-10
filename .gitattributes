@@ -2,3 +2,4 @@
 src/** text eol=lf
 tests/** text eol=lf
 CMakeLists.txt text eol=lf
+patches/*.patch text eol=lf

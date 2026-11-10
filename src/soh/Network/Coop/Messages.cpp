@@ -2,6 +2,7 @@
 
 #include "soh/Network/Coop/Wire.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 
@@ -246,6 +247,164 @@ std::optional<FlagSnapshot> DecodeFlagSnapshot(std::span<const uint8_t> bytes) {
         return std::nullopt;
     }
     return s;
+}
+
+std::vector<uint8_t> EncodeEnemyKill(const EnemyKill& k) {
+    ByteWriter w;
+    w.U8(static_cast<uint8_t>(MessageType::EnemyKilled));
+    w.U16(static_cast<uint16_t>(k.sceneNum));
+    w.U8(k.layer);
+    w.U8(static_cast<uint8_t>(k.room));
+    w.U16(static_cast<uint16_t>(k.listIndex));
+    w.U16(static_cast<uint16_t>(k.actorId));
+    w.U16(static_cast<uint16_t>(k.params));
+    return w.Take();
+}
+
+std::optional<EnemyKill> DecodeEnemyKill(std::span<const uint8_t> bytes) {
+    ByteReader r(bytes);
+    EnemyKill k;
+    uint8_t type = 0, room = 0;
+    uint16_t scene = 0, index = 0, id = 0, params = 0;
+    if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::EnemyKilled) || !r.U16(scene) || !r.U8(k.layer) ||
+        !r.U8(room) || !r.U16(index) || !r.U16(id) || !r.U16(params) || r.Remaining() != 0) {
+        return std::nullopt;
+    }
+    k.sceneNum = static_cast<int16_t>(scene);
+    k.room = static_cast<int8_t>(room);
+    k.listIndex = static_cast<int16_t>(index);
+    k.actorId = static_cast<int16_t>(id);
+    k.params = static_cast<int16_t>(params);
+    return k;
+}
+
+namespace {
+
+void WriteVecF(ByteWriter& w, const Vec3f32& v) {
+    WriteFloat(w, v.x);
+    WriteFloat(w, v.y);
+    WriteFloat(w, v.z);
+}
+
+// only sane positions get through
+bool ReadVecF(ByteReader& r, Vec3f32& v) {
+    return ReadFloat(r, v.x) && ReadFloat(r, v.y) && ReadFloat(r, v.z) && IsSaneCoordinate(v.x) &&
+           IsSaneCoordinate(v.y) && IsSaneCoordinate(v.z);
+}
+
+bool ReadEnemyState(ByteReader& r, EnemyState& e) {
+    uint8_t room = 0, quadCount = 0, jointCount = 0;
+    uint16_t index = 0, id = 0;
+    if (!r.U8(room) || !r.U16(index) || !r.U16(id) || !ReadVecF(r, e.pos) || !ReadVecF(r, e.focus) ||
+        !ReadVecF(r, e.scale) || !ReadVec(r, e.shapeRot) || !ReadVec(r, e.worldRot) || !r.U8(e.health) ||
+        !r.U8(e.submitted) || !r.U8(quadCount) || quadCount > kMaxEnemyQuads) {
+        return false;
+    }
+    e.room = static_cast<int8_t>(room);
+    e.listIndex = static_cast<int16_t>(index);
+    e.actorId = static_cast<int16_t>(id);
+    e.quadCorners.resize(static_cast<size_t>(quadCount) * 4);
+    for (Vec3f32& c : e.quadCorners) {
+        if (!ReadVecF(r, c)) {
+            return false;
+        }
+    }
+    if (!r.U8(jointCount) || jointCount > kMaxEnemyJoints || r.Remaining() < static_cast<size_t>(jointCount) * 6) {
+        return false;
+    }
+    e.joints.resize(jointCount);
+    for (Vec3i16& j : e.joints) {
+        ReadVec(r, j);
+    }
+    return true;
+}
+
+} // namespace
+
+std::vector<uint8_t> EncodeEnemyStates(const EnemyStates& s) {
+    ByteWriter w;
+    w.U8(static_cast<uint8_t>(MessageType::EnemyStates));
+    w.U16(static_cast<uint16_t>(s.sceneNum));
+    w.U8(s.layer);
+    size_t count = std::min(s.enemies.size(), kMaxEnemiesPerPacket);
+    w.U8(static_cast<uint8_t>(count));
+    for (size_t i = 0; i < count; i++) {
+        const EnemyState& e = s.enemies[i];
+        w.U8(static_cast<uint8_t>(e.room));
+        w.U16(static_cast<uint16_t>(e.listIndex));
+        w.U16(static_cast<uint16_t>(e.actorId));
+        WriteVecF(w, e.pos);
+        WriteVecF(w, e.focus);
+        WriteVecF(w, e.scale);
+        WriteVec(w, e.shapeRot);
+        WriteVec(w, e.worldRot);
+        w.U8(e.health);
+        w.U8(e.submitted);
+        size_t quads = std::min(e.quadCorners.size() / 4, kMaxEnemyQuads);
+        w.U8(static_cast<uint8_t>(quads));
+        for (size_t q = 0; q < quads * 4; q++) {
+            WriteVecF(w, e.quadCorners[q]);
+        }
+        size_t joints = std::min(e.joints.size(), kMaxEnemyJoints);
+        w.U8(static_cast<uint8_t>(joints));
+        for (size_t j = 0; j < joints; j++) {
+            WriteVec(w, e.joints[j]);
+        }
+    }
+    return w.Take();
+}
+
+std::optional<EnemyStates> DecodeEnemyStates(std::span<const uint8_t> bytes) {
+    ByteReader r(bytes);
+    EnemyStates s;
+    uint8_t type = 0, count = 0;
+    uint16_t scene = 0;
+    if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::EnemyStates) || !r.U16(scene) || !r.U8(s.layer) ||
+        !r.U8(count) || count > kMaxEnemiesPerPacket) {
+        return std::nullopt;
+    }
+    s.sceneNum = static_cast<int16_t>(scene);
+    s.enemies.resize(count);
+    for (EnemyState& e : s.enemies) {
+        if (!ReadEnemyState(r, e)) {
+            return std::nullopt;
+        }
+    }
+    if (r.Remaining() != 0) {
+        return std::nullopt;
+    }
+    return s;
+}
+
+std::vector<uint8_t> EncodeEnemyHit(const EnemyHit& h) {
+    ByteWriter w;
+    w.U8(static_cast<uint8_t>(MessageType::EnemyHit));
+    w.U16(static_cast<uint16_t>(h.sceneNum));
+    w.U8(static_cast<uint8_t>(h.room));
+    w.U16(static_cast<uint16_t>(h.listIndex));
+    w.U16(static_cast<uint16_t>(h.actorId));
+    w.U8(h.damage);
+    w.U8(h.effect);
+    w.U32(h.dmgFlags);
+    WriteVec(w, h.hitPos);
+    return w.Take();
+}
+
+std::optional<EnemyHit> DecodeEnemyHit(std::span<const uint8_t> bytes) {
+    ByteReader r(bytes);
+    EnemyHit h;
+    uint8_t type = 0, room = 0;
+    uint16_t scene = 0, index = 0, id = 0;
+    if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::EnemyHit) || !r.U16(scene) || !r.U8(room) ||
+        !r.U16(index) || !r.U16(id) || !r.U8(h.damage) || !r.U8(h.effect) || !r.U32(h.dmgFlags) ||
+        !ReadVec(r, h.hitPos) || r.Remaining() != 0) {
+        return std::nullopt;
+    }
+    h.sceneNum = static_cast<int16_t>(scene);
+    h.room = static_cast<int8_t>(room);
+    h.listIndex = static_cast<int16_t>(index);
+    h.actorId = static_cast<int16_t>(id);
+    return h;
 }
 
 } // namespace Coop

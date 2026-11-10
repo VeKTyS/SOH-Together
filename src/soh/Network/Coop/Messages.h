@@ -11,13 +11,96 @@
 
 namespace Coop {
 
+struct Vec3i16 {
+    int16_t x = 0, y = 0, z = 0;
+    bool operator==(const Vec3i16&) const = default;
+};
+
 enum class MessageType : uint8_t {
     PlayerState = 1,         // Snapshot channel, every game frame (20 Hz)
     PlayerPose = 2,          // Snapshot channel, every game frame while in game
     FlagChange = 3,          // Ordered channel: someone set/unset a flag (chest opened, switch pressed...)
     FlagSnapshotRequest = 4, // Ordered channel: client -> host, "send me all your flags"
     FlagSnapshot = 5,        // Ordered channel: host -> client, all the flags at once
+    EnemyKilled = 6,         // Ordered channel: someone killed an enemy, it dies for everyone
+    EnemyStates = 7,         // Snapshot channel, host -> clients: where the host's enemies are, every frame
+    EnemyHit = 8,            // Ordered channel, client -> host: "I hit that enemy"
 };
+
+// "That enemy is dead". An enemy is recognized by where it was placed in the
+// level: scene + layer (child/adult, day/night...) + room + its position in the
+// room's actor list. Same game data on both sides, so same numbers.
+// actorId/params are there to double check we're killing the right thing.
+struct EnemyKill {
+    int16_t sceneNum = 0;
+    uint8_t layer = 0;
+    int8_t room = 0;
+    int16_t listIndex = 0;
+    int16_t actorId = 0;
+    int16_t params = 0;
+    bool operator==(const EnemyKill&) const = default;
+};
+
+std::vector<uint8_t> EncodeEnemyKill(const EnemyKill& kill);
+std::optional<EnemyKill> DecodeEnemyKill(std::span<const uint8_t> bytes);
+
+struct Vec3f32 {
+    float x = 0, y = 0, z = 0;
+    bool operator==(const Vec3f32&) const = default;
+};
+
+// Limits so a broken packet can't make us allocate or copy silly amounts.
+inline constexpr size_t kMaxEnemiesPerPacket = 64;
+inline constexpr size_t kMaxEnemyJoints = 128; // biggest boss skeleton is under 90
+inline constexpr size_t kMaxEnemyQuads = 8;
+
+// One enemy as the host sees it. The client freezes its own copy and makes it
+// look exactly like this.
+struct EnemyState {
+    int8_t room = 0;
+    int16_t listIndex = 0;
+    int16_t actorId = 0;
+    Vec3f32 pos;
+    Vec3f32 focus; // where the lock-on arrow goes
+    Vec3f32 scale;
+    Vec3i16 shapeRot;
+    Vec3i16 worldRot;
+    uint8_t health = 0;
+    uint8_t submitted = 0; // which colliders the host's enemy used this frame: 1 = AT, 2 = AC, 4 = OC
+    // quad colliders (swords, spears...) move with the attack, the client can't
+    // guess them: 4 corners per quad, in the enemy's collider order
+    std::vector<Vec3f32> quadCorners;
+    std::vector<Vec3i16> joints; // skeleton pose, empty if the enemy has no skeleton
+    bool operator==(const EnemyState&) const = default;
+};
+
+struct EnemyStates {
+    int16_t sceneNum = 0;
+    uint8_t layer = 0;
+    std::vector<EnemyState> enemies;
+    bool operator==(const EnemyStates&) const = default;
+};
+
+std::vector<uint8_t> EncodeEnemyStates(const EnemyStates& states);
+// nullopt if truncated, too many entries, or a position isn't a sane number.
+std::optional<EnemyStates> DecodeEnemyStates(std::span<const uint8_t> bytes);
+
+// A client's sword/arrow/whatever touched the host's enemy. The host replays
+// it through the enemy's own damage code, so weak points and i-frames still work.
+struct EnemyHit {
+    int16_t sceneNum = 0;
+    int8_t room = 0;
+    int16_t listIndex = 0;
+    int16_t actorId = 0;
+    uint8_t damage = 0;
+    uint8_t effect = 0;    // damage effect from the enemy's table (stun, fire, ice...)
+    uint32_t dmgFlags = 0; // what hit it (sword, arrow, fire...), the game's DMG_ flags
+    Vec3i16 hitPos;
+    bool operator==(const EnemyHit&) const = default;
+};
+
+std::vector<uint8_t> EncodeEnemyHit(const EnemyHit& hit);
+std::optional<EnemyHit> DecodeEnemyHit(std::span<const uint8_t> bytes);
 
 // One flag going up or down. sceneNum = -1 for the global ones (story events etc).
 // flagType uses SoH's FlagType enum, the game side checks it's one we sync.
@@ -61,11 +144,6 @@ struct PlayerState {
     float x = 0, y = 0, z = 0;
     int16_t yaw = 0;            // binary angle, 0x10000 = full turn
     int32_t entranceIndex = -1; // the door/loading zone they came in by, needed to teleport to them
-};
-
-struct Vec3i16 {
-    int16_t x = 0, y = 0, z = 0;
-    bool operator==(const Vec3i16&) const = default;
 };
 
 // Link's skeleton has 22 limbs + 2 extra slots the animation code uses.
