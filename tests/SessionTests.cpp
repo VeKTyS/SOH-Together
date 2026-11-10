@@ -1,0 +1,152 @@
+// Two Sessions talking over loopback UDP, as the game will use them.
+
+#include "soh/Network/Coop/Session.h"
+
+#include <gtest/gtest.h>
+
+#include <functional>
+#include <thread>
+
+using namespace Coop;
+using namespace std::chrono_literals;
+
+namespace {
+
+Hello MakeHello(const char* name, uint64_t build = 7) {
+    Hello h;
+    h.buildHash = build;
+    h.playerName = name;
+    return h;
+}
+
+PlayerState StateAt(float x, int16_t scene = 0x55) {
+    PlayerState s;
+    s.inGame = true;
+    s.sceneNum = scene;
+    s.x = x;
+    return s;
+}
+
+// Ticks both sessions (like two games running their frames) until done().
+bool TickUntil(Session& a, const PlayerState& sa, Session& b, const PlayerState& sb, const std::function<bool()>& done,
+               std::chrono::milliseconds deadline = 3s) {
+    auto end = std::chrono::steady_clock::now() + deadline;
+    while (std::chrono::steady_clock::now() < end) {
+        a.Tick(sa);
+        b.Tick(sb);
+        if (done()) {
+            return true;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    return false;
+}
+
+} // namespace
+
+TEST(Session, HostAndClientSeeEachOtherNamesAndPositions) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Zelda")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Link")));
+    EXPECT_EQ(client.Role(), SessionRole::Connecting);
+
+    ASSERT_TRUE(TickUntil(host, StateAt(100), client, StateAt(-200), [&] {
+        return host.Players().size() == 1 && client.Players().size() == 1 && host.Players()[0].state &&
+               client.Players()[0].state;
+    }));
+
+    EXPECT_EQ(host.Role(), SessionRole::Hosting);
+    EXPECT_EQ(client.Role(), SessionRole::Connected);
+    EXPECT_EQ(host.Players()[0].name, "Link");
+    EXPECT_EQ(client.Players()[0].name, "Zelda");
+    EXPECT_EQ(host.Players()[0].state->x, -200);
+    EXPECT_EQ(client.Players()[0].state->x, 100);
+}
+
+TEST(Session, LatestStateWins) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Zelda")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Link")));
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(1),
+                          [&] { return !host.Players().empty() && host.Players()[0].state; }));
+
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(555), [&] { return host.Players()[0].state->x == 555; }));
+}
+
+TEST(Session, ClientStopIsSeenByHost) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Zelda")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Link")));
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] { return host.Players().size() == 1; }));
+
+    client.Stop();
+    EXPECT_EQ(client.Role(), SessionRole::Off);
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] { return host.Players().empty(); }));
+    EXPECT_EQ(host.Role(), SessionRole::Hosting); // the host keeps hosting
+}
+
+TEST(Session, HostStopEndsTheClientSessionWithAReason) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Zelda")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Link")));
+    ASSERT_TRUE(
+        TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Connected; }));
+
+    host.Stop();
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Off; }));
+    EXPECT_FALSE(client.LastError().empty());
+    EXPECT_TRUE(client.Players().empty());
+}
+
+TEST(Session, DifferentBuildIsRefusedWithAReadableReason) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Zelda", 1)));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Link", 2)));
+
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Off; }));
+    EXPECT_NE(client.LastError().find("same soh.exe"), std::string::npos) << client.LastError();
+    EXPECT_TRUE(host.Players().empty());
+}
+
+TEST(Session, HostingOnABusyPortFailsCleanly) {
+    Session first, second;
+    ASSERT_TRUE(first.Host(0, MakeHello("Zelda")));
+    EXPECT_FALSE(second.Host(first.Port(), MakeHello("Ganon")));
+    EXPECT_EQ(second.Role(), SessionRole::Off);
+    EXPECT_NE(second.LastError().find("port"), std::string::npos);
+}
+
+TEST(Session, LoggerReceivesLifecycleLines) {
+    std::vector<std::string> lines;
+    {
+        Session host([&](const std::string& l) { lines.push_back(l); });
+        ASSERT_TRUE(host.Host(0, MakeHello("Zelda")));
+    }
+    ASSERT_FALSE(lines.empty());
+    EXPECT_NE(lines[0].find("Hosting"), std::string::npos);
+}
+
+TEST(ParseAddress, HostAloneUsesTheDefaultPort) {
+    std::string host;
+    uint16_t port = 0;
+    ASSERT_TRUE(ParseAddress("192.168.1.20", host, port));
+    EXPECT_EQ(host, "192.168.1.20");
+    EXPECT_EQ(port, kDefaultPort);
+}
+
+TEST(ParseAddress, ExplicitPortAndSpacesFromCopyPaste) {
+    std::string host;
+    uint16_t port = 0;
+    ASSERT_TRUE(ParseAddress("  100.64.0.7:30000 \t", host, port));
+    EXPECT_EQ(host, "100.64.0.7");
+    EXPECT_EQ(port, 30000);
+}
+
+TEST(ParseAddress, InvalidInputsAreRejected) {
+    std::string host;
+    uint16_t port = 0;
+    for (const char* bad : { "", "   ", ":27720", "1.2.3.4:", "1.2.3.4:0", "1.2.3.4:65536", "1.2.3.4:99999999",
+                             "1.2.3.4:12a", "my host:1234", "::1" }) {
+        EXPECT_FALSE(ParseAddress(bad, host, port)) << "'" << bad << "'";
+    }
+}

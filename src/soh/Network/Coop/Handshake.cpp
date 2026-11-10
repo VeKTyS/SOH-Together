@@ -112,4 +112,13 @@ const char* Describe(HandshakeError error) {
     return "Unknown error";
 }
 
+uint64_t BuildHash(std::string_view buildIdentity) {
+    uint64_t hash = 0xCBF29CE484222325ULL; // FNV-1a 64-bit offset basis
+    for (char c : buildIdentity) {
+        hash ^= static_cast<uint8_t>(c);
+        hash *= 0x100000001B3ULL; // FNV-1a 64-bit prime
+    }
+    return hash;
+}
+
 } // namespace Coop

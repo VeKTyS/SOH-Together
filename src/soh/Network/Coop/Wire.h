@@ -1,7 +1,8 @@
 #pragma once
 
-// Explicit little-endian encoding, byte by byte.
-// Every read is bounds-checked: input from the network is never trusted.
+// Tiny helpers to write/read numbers byte by byte (lowest byte first).
+// Every read checks there's enough data left: packets from the network can be
+// garbage, we never want to read past the end.
 
 #include <cstddef>
 #include <cstdint>

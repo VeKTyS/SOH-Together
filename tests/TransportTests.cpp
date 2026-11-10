@@ -312,3 +312,19 @@ TEST(Transport, DisconnectDataRoundTripAndGarbageIsSafe) {
     EXPECT_EQ(reason, DisconnectReason::ConnectionLost);
     EXPECT_EQ(error, HandshakeError::None);
 }
+
+TEST(Transport, LocalAddressesAreDottedQuadsWithoutLoopback) {
+    for (const std::string& ip : LocalIPv4Addresses()) {
+        EXPECT_EQ(std::count(ip.begin(), ip.end(), '.'), 3) << ip;
+        EXPECT_NE(ip.rfind("127.", 0), 0u) << ip;
+    }
+}
+
+TEST(Transport, RoundTripIsZeroForUnknownPeerAndMeasuredForReadyPeer) {
+    Session s(MakeConfig("Zelda"), MakeConfig("Link"));
+    ASSERT_TRUE(s.BothConnected());
+    EXPECT_EQ(s.host->RoundTripMs(999), 0u);
+    // ENet starts at 500 ms until its first ping is acknowledged (every 500 ms).
+    PeerId toClient = Find(s.hostEvents, Type::Connected)->peer;
+    ASSERT_TRUE(s.Pump([&] { return s.host->RoundTripMs(toClient) < 100; }, 3s));
+}

@@ -1,10 +1,11 @@
 #pragma once
 
-// UDP transport for the co-op session (ENet underneath, never exposed).
-// Single-threaded: call Poll() once per game frame from the game thread.
+// Sends and receives packets over UDP. ENet does the heavy lifting, but the
+// rest of the code never sees it (easier to swap later if we need to).
+// Call Poll() once per frame, from the game thread only.
 //
-// A peer only becomes visible to the game (Connected event) after both sides
-// exchanged a compatible Hello. Until then, nothing else may be sent or received.
+// Someone only counts as "connected" once both sides swapped a matching
+// Hello. Before that, we don't accept anything else from them.
 
 #include "soh/Network/Coop/Handshake.h"
 
@@ -21,18 +22,18 @@ typedef struct _ENetPeer ENetPeer;
 
 namespace Coop {
 
-// ref.md §4.2
+// 3 lanes so a slow one doesn't hold up the others
 enum class Channel : uint8_t {
-    Ordered = 0,  // reliable, ordered: progression, spawns, cutscenes
-    Snapshot = 1, // unreliable, sequenced (older packets dropped): positions, AI state
-    Rpc = 2,      // reliable, independent from Ordered: hits, requests
+    Ordered = 0,  // always arrives, in order: story progress, spawns, cutscenes
+    Snapshot = 1, // can get lost, old ones are dropped: positions (a new one comes next frame anyway)
+    Rpc = 2,      // always arrives, but doesn't wait behind Ordered: hits, requests
 };
 inline constexpr uint8_t kChannelCount = 3;
 
-// Larger incoming packets are dropped by ENet before reaching us.
+// 1 MB max per message, ENet throws away anything bigger
 inline constexpr size_t kMaxMessageBytes = 1 << 20;
 
-// Unique per Transport, never reused during its lifetime.
+// Just a number to tell peers apart, never reused
 using PeerId = uint32_t;
 
 enum class DisconnectReason : uint8_t {
@@ -61,6 +62,11 @@ struct TransportConfig {
     size_t maxPeers = 4;
 };
 
+// IPv4 addresses of this machine (loopback excluded), to show the host which
+// address to give to friends. Empty if the lookup fails. LAN addresses only:
+// the public (internet) address is only known to the router.
+std::vector<std::string> LocalIPv4Addresses();
+
 class Transport {
   public:
     // port 0 lets the OS pick a free port (see LocalPort()). nullptr on failure.
@@ -76,7 +82,11 @@ class Transport {
     void Poll(std::vector<TransportEvent>& out);
 
     // False if the peer is unknown or has not completed the handshake.
+    // Queued only: packets leave on the next Poll() or Flush().
     bool Send(PeerId peer, Channel channel, std::span<const uint8_t> payload);
+
+    // Sends queued packets now (call after the frame's Send()s).
+    void Flush();
 
     // Graceful: queued messages are delivered first. The local Disconnected
     // event (reason Normal) is returned by the next Poll().
@@ -84,6 +94,11 @@ class Transport {
 
     uint16_t LocalPort() const;
     size_t ReadyPeerCount() const;
+
+    // Most recent round-trip time measured by ENet, in ms. ENet pings every
+    // 500 ms and starts at a default of 500 ms, so the first second is not
+    // meaningful. 0 for an unknown peer.
+    uint32_t RoundTripMs(PeerId peer) const;
 
     // ENet's disconnect payload is a single integer: reason in the low byte,
     // handshake error in the next one. Exposed for tests and diagnostics.

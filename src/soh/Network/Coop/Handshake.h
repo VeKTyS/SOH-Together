@@ -1,25 +1,26 @@
 #pragma once
 
-// First message each side sends after connecting.
-// A session only starts if both sides run the same build, the same
-// protocol version and the same seed/settings (see docs: ref.md §4.2).
+// The "hello" both sides send right after connecting.
+// If the game builds, mod versions or seeds don't match, we stop there and
+// tell both players why, instead of letting things go weird later.
 
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Coop {
 
-// "SOHT", read as little-endian. Rejects anything that is not our protocol
-// (another program on the same port, a stray packet) before parsing further.
+// The 4 letters "SOHT" at the start. If they're not there, it's not us
+// (some other program talking on the same port), so don't even try to read on.
 inline constexpr uint32_t kHelloMagic = 0x54484F53;
 
-// Bump on ANY change to any message layout.
+// Bump this every time ANY message format changes.
 inline constexpr uint16_t kProtocolVersion = 1;
 
-// Player names are capped in bytes (UTF-8), not characters.
+// 32 bytes, not 32 letters: an "é" takes 2 bytes.
 inline constexpr size_t kMaxNameBytes = 32;
 
 struct Hello {
@@ -29,7 +30,8 @@ struct Hello {
     std::string playerName;
 };
 
-// Ordered by check priority: the first mismatch found is the one reported.
+// Checked in this order, we only report the first problem found
+// (no point comparing seeds if the game builds are different anyway).
 enum class HandshakeError : uint8_t {
     None,
     BadMagic,         // not our protocol at all
@@ -50,12 +52,15 @@ std::vector<uint8_t> EncodeHello(const Hello& hello);
 
 HelloDecodeResult DecodeHello(std::span<const uint8_t> bytes);
 
-// Compares two decoded Hellos. Does not decide what to do on SeedMismatch:
-// for now the session is refused; later the guest will switch to the host's
-// seed (ref.md §4.10).
+// For now a different seed = refused. Later the guest should just switch to
+// the host's seed instead.
 HandshakeError CheckCompatibility(const Hello& local, const Hello& remote);
 
 // Short message for the UI and logs.
 const char* Describe(HandshakeError error);
+
+// Turns "our commit + SoH's commit" into one number to compare.
+// It's FNV-1a: simple and fast, not meant to be secure.
+uint64_t BuildHash(std::string_view buildIdentity);
 
 } // namespace Coop

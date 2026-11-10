@@ -28,6 +28,8 @@ endif()
 
 add_library(coop_core STATIC
     src/soh/Network/Coop/Handshake.cpp
+    src/soh/Network/Coop/Messages.cpp
+    src/soh/Network/Coop/Session.cpp
     src/soh/Network/Coop/Transport.cpp
 )
 target_include_directories(coop_core PUBLIC src)
@@ -50,7 +52,12 @@ if(SOHT_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 
     enable_testing()
-    add_executable(coop_tests tests/HandshakeTests.cpp tests/TransportTests.cpp)
+    add_executable(coop_tests
+        tests/HandshakeTests.cpp
+        tests/MessagesTests.cpp
+        tests/SessionTests.cpp
+        tests/TransportTests.cpp
+    )
     target_link_libraries(coop_tests PRIVATE coop_core gtest_main)
     if(MSVC)
         target_compile_options(coop_tests PRIVATE /utf-8)
