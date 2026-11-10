@@ -23,7 +23,8 @@ struct PlayerState {
     int16_t roomNum = 0;  // current room, -1 during some transitions
     uint8_t linkAge = 0;  // LINK_AGE_ADULT (0) / LINK_AGE_CHILD (1)
     float x = 0, y = 0, z = 0;
-    int16_t yaw = 0; // binary angle, 0x10000 = full turn
+    int16_t yaw = 0;            // binary angle, 0x10000 = full turn
+    int32_t entranceIndex = -1; // the door/loading zone they came in by, needed to teleport to them
 };
 
 // Real OoT positions stay way below this. A bigger number means a broken (or

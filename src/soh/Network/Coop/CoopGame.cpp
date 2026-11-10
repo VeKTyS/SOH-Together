@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <mutex>
+#include <optional>
 
 extern "C" {
 #include "z64.h"
@@ -45,6 +46,10 @@ Coop::PlayerState gLocalState;
 
 // Addresses shown to the host. Looking them up is slow-ish, so only once when hosting starts.
 std::vector<std::string> gHostAddresses;
+
+// Who we want to teleport to. The menu just writes this, the actual teleport
+// happens in OnFrame so we only touch the game from the game loop.
+std::optional<Coop::PeerId> gTeleportTarget;
 
 Coop::Session& GetSession() {
     static Coop::Session session([](const std::string& line) { SPDLOG_INFO("[Coop] {}", line); });
@@ -87,12 +92,63 @@ Coop::PlayerState ReadLocalState() {
     state.y = player->actor.world.pos.y;
     state.z = player->actor.world.pos.z;
     state.yaw = player->actor.shape.rot.y;
+    state.entranceIndex = gSaveContext.entranceIndex;
     return state;
+}
+
+// Same trick as Anchor: we pretend we fell in a hole and make the game
+// respawn us exactly where the other player stands (their entrance, room and
+// position), with an instant transition. Works across scenes too.
+void TeleportTo(const Coop::PlayerState& them) {
+    gPlayState->nextEntranceIndex = them.entranceIndex;
+    gPlayState->transitionTrigger = TRANS_TRIGGER_START;
+    gPlayState->transitionType = TRANS_TYPE_INSTANT;
+    gSaveContext.respawn[RESPAWN_MODE_DOWN].entranceIndex = them.entranceIndex;
+    gSaveContext.respawn[RESPAWN_MODE_DOWN].roomIndex = static_cast<s8>(them.roomNum);
+    gSaveContext.respawn[RESPAWN_MODE_DOWN].pos = { them.x, them.y, them.z };
+    gSaveContext.respawn[RESPAWN_MODE_DOWN].yaw = them.yaw;
+    gSaveContext.respawn[RESPAWN_MODE_DOWN].playerParams = 0xDFF;
+    gSaveContext.nextTransitionType = TRANS_TYPE_FADE_BLACK_FAST;
+    gSaveContext.respawnFlag = 1;
+
+    // "falling in a hole" normally costs a bit of health, skip that once
+    static HOOK_ID hookId = 0;
+    hookId = REGISTER_VB_SHOULD(VB_INFLICT_VOID_DAMAGE, {
+        *should = false;
+        GameInteractor::Instance->UnregisterGameHookForID<GameInteractor::OnVanillaBehavior>(hookId);
+    });
+}
+
+void HandleTeleportRequest() {
+    Coop::PeerId target = *gTeleportTarget;
+    gTeleportTarget.reset();
+
+    for (const Coop::RemotePlayer& p : GetSession().Players()) {
+        if (p.peer != target || !p.state) {
+            continue;
+        }
+        // re-check here: things may have changed since the click
+        if (const char* why = Coop::TeleportBlocker(gLocalState, *p.state, ENTR_MAX)) {
+            SPDLOG_INFO("[Coop] Can't teleport to {}: {}", p.name, why);
+            return;
+        }
+        if (gPlayState->transitionTrigger != TRANS_TRIGGER_OFF) {
+            SPDLOG_INFO("[Coop] Can't teleport to {} during a loading zone", p.name);
+            return;
+        }
+        SPDLOG_INFO("[Coop] Teleporting to {} (entrance {:#x}, room {})", p.name, p.state->entranceIndex,
+                    p.state->roomNum);
+        TeleportTo(*p.state);
+        return;
+    }
 }
 
 void OnFrame() {
     std::lock_guard lock(gMutex);
     gLocalState = ReadLocalState();
+    if (gTeleportTarget && gLocalState.inGame) {
+        HandleTeleportRequest();
+    }
     GetSession().Tick(gLocalState);
 }
 
@@ -119,6 +175,19 @@ void DrawPlayer(const Coop::RemotePlayer& p) {
         return;
     }
     ImGui::Text("  %s", Where(*p.state).c_str());
+
+    // grayed out with the reason on hover when it's not possible right now
+    const char* blocker = Coop::TeleportBlocker(gLocalState, *p.state, ENTR_MAX);
+    ImGui::PushID(static_cast<int>(p.peer));
+    ImGui::BeginDisabled(blocker != nullptr || gTeleportTarget.has_value());
+    if (ImGui::SmallButton(("Teleport to " + p.name).c_str())) {
+        gTeleportTarget = p.peer;
+    }
+    ImGui::EndDisabled();
+    if (blocker != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", blocker);
+    }
+    ImGui::PopID();
 
     // handy to see if things move when they walk around
     if (p.state->inGame && gLocalState.inGame && p.state->sceneNum == gLocalState.sceneNum) {
@@ -254,9 +323,12 @@ void RegisterCoopMenu() {
     SohGui::mSohMenu->AddWidget(path, "CoopMain", WIDGET_CUSTOM).CustomFunction(DrawCoopMenu).HideInSearch(true);
 }
 
+// SoH calls this again when you load a preset or a config file, not just at
+// boot. COND_HOOK removes the previous hook first, otherwise we'd end up
+// ticking the session 2-3 times per frame.
 void RegisterCoopFrameHook() {
     SPDLOG_INFO("[Coop] build {}", SOHT_BUILD_ID);
-    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>(OnFrame);
+    COND_HOOK(OnGameFrameUpdate, true, OnFrame);
 }
 
 } // namespace

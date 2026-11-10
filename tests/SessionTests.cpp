@@ -150,3 +150,29 @@ TEST(ParseAddress, InvalidInputsAreRejected) {
         EXPECT_FALSE(ParseAddress(bad, host, port)) << "'" << bad << "'";
     }
 }
+
+namespace {
+PlayerState Somewhere(int32_t entrance = 0x0EE, int16_t room = 2) {
+    PlayerState s;
+    s.inGame = true;
+    s.entranceIndex = entrance;
+    s.roomNum = room;
+    return s;
+}
+constexpr int32_t kEntrances = 0x614; // ENTR_MAX in SoH 9.3.1
+} // namespace
+
+TEST(Teleport, AllowedWhenBothInGameAndTheirLocationIsValid) {
+    EXPECT_EQ(TeleportBlocker(Somewhere(), Somewhere(), kEntrances), nullptr);
+    EXPECT_EQ(TeleportBlocker(Somewhere(), Somewhere(kEntrances - 1, 0), kEntrances), nullptr);
+}
+
+TEST(Teleport, BlockedWithAReasonOtherwise) {
+    PlayerState notInGame;
+    EXPECT_NE(TeleportBlocker(notInGame, Somewhere(), kEntrances), nullptr);
+    EXPECT_NE(TeleportBlocker(Somewhere(), notInGame, kEntrances), nullptr);
+    // values coming from the network that would make the game load garbage
+    EXPECT_NE(TeleportBlocker(Somewhere(), Somewhere(-1), kEntrances), nullptr);
+    EXPECT_NE(TeleportBlocker(Somewhere(), Somewhere(kEntrances), kEntrances), nullptr);
+    EXPECT_NE(TeleportBlocker(Somewhere(), Somewhere(0x0EE, -1), kEntrances), nullptr);
+}

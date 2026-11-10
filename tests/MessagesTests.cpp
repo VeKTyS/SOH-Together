@@ -98,3 +98,13 @@ TEST(Messages, CoordinateLimitIsInclusive) {
     s.z = -kMaxCoordinate;
     EXPECT_TRUE(DecodePlayerState(EncodePlayerState(s)).has_value());
 }
+
+TEST(Messages, EntranceIndexRoundTripIncludingUnknown) {
+    for (int32_t entrance : { -1, 0, 0x0EE, 0x613 }) {
+        PlayerState s = MakeState();
+        s.entranceIndex = entrance;
+        std::optional<PlayerState> out = DecodePlayerState(EncodePlayerState(s));
+        ASSERT_TRUE(out.has_value());
+        EXPECT_EQ(out->entranceIndex, entrance);
+    }
+}

@@ -20,6 +20,19 @@ std::string DescribeDisconnect(DisconnectReason reason, HandshakeError error) {
     return "Disconnected";
 }
 
+const char* TeleportBlocker(const PlayerState& me, const PlayerState& them, int32_t entranceCount) {
+    if (!me.inGame) {
+        return "Load your save first";
+    }
+    if (!them.inGame) {
+        return "They're not in game";
+    }
+    if (them.entranceIndex < 0 || them.entranceIndex >= entranceCount || them.roomNum < 0) {
+        return "Not sure where they are yet, try again in a sec";
+    }
+    return nullptr;
+}
+
 bool ParseAddress(const std::string& text, std::string& host, uint16_t& port) {
     size_t begin = text.find_first_not_of(" \t");
     size_t end = text.find_last_not_of(" \t");

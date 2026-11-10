@@ -18,7 +18,8 @@ namespace Coop {
 inline constexpr uint32_t kHelloMagic = 0x54484F53;
 
 // Bump this every time ANY message format changes.
-inline constexpr uint16_t kProtocolVersion = 1;
+// 2: PlayerState got entranceIndex (for teleporting)
+inline constexpr uint16_t kProtocolVersion = 2;
 
 // 32 bytes, not 32 letters: an "é" takes 2 bytes.
 inline constexpr size_t kMaxNameBytes = 32;
