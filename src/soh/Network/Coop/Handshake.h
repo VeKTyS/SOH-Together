@@ -25,7 +25,9 @@ inline constexpr uint32_t kHelloMagic = 0x54484F53;
 // 6: time of day in PlayerState
 // 7: enemy memory copy in EnemyState, flame timers in PlayerPose
 // 8: ThingStates (carried / thrown things, bombs)
-inline constexpr uint16_t kProtocolVersion = 8;
+// 9: player ids + clients see each other (Welcome / Forwarded / PeerLeft),
+//    generic Event, player color / team, full Link rotation
+inline constexpr uint16_t kProtocolVersion = 9;
 
 // 32 bytes, not 32 letters: an "é" takes 2 bytes.
 inline constexpr size_t kMaxNameBytes = 32;

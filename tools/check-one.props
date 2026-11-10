@@ -1,0 +1,12 @@
+<Project>
+  <!-- Syntax/compile check of one co-op file, used by scripts/check-file.ps1.
+       No PDB and its own output folder, so several checks can run at once
+       without touching the real build. -->
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <DebugInformationFormat>None</DebugInformationFormat>
+      <ProgramDataBaseFileName></ProgramDataBaseFileName>
+      <ObjectFileName>$(CoopCheckDir)\</ObjectFileName>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>

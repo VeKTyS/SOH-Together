@@ -109,7 +109,7 @@ TEST(Messages, TimeOfDayRoundTrip) {
     EXPECT_EQ(out->dayTime, 0xC123);
     EXPECT_TRUE(out->night);
     std::vector<uint8_t> bad = EncodePlayerState(s);
-    bad.back() = 2; // night is 0 or 1
+    bad[bad.size() - 5] = 2; // night is 0 or 1 (followed by color r,g,b and team)
     EXPECT_FALSE(DecodePlayerState(bad).has_value());
 }
 
@@ -418,4 +418,82 @@ TEST(Messages, ThingStatesRoundTripAndLimits) {
     }
     std::vector<uint8_t> tooMany = { static_cast<uint8_t>(MessageType::ThingStates), 0, 0, 0, 0, 0, 0, 0, 99 };
     EXPECT_FALSE(DecodeThingStates(tooMany).has_value());
+}
+
+TEST(Messages, WelcomeForwardedPeerLeftEventRoundTrip) {
+    Welcome w{ 7 };
+    EXPECT_TRUE(DecodeWelcome(EncodeWelcome(w)) == w);
+    EXPECT_FALSE(DecodeWelcome(EncodeWelcome(Welcome{ 0 })).has_value()); // 0 = no id
+
+    Forwarded f;
+    f.origin = 3;
+    f.name = "Malon";
+    f.inner = EncodePlayerState(PlayerState{});
+    std::optional<Forwarded> fo = DecodeForwarded(EncodeForwarded(f));
+    ASSERT_TRUE(fo.has_value());
+    EXPECT_TRUE(*fo == f);
+
+    PeerLeft p{ 4 };
+    EXPECT_TRUE(DecodePeerLeft(EncodePeerLeft(p)) == p);
+
+    Event e;
+    e.origin = 2;
+    e.kind = EventKind::OcarinaNote;
+    e.data = { 1, 2, 3 };
+    std::vector<uint8_t> bytes = EncodeEvent(e);
+    EXPECT_TRUE(DecodeEvent(bytes) == e);
+    for (size_t len = 0; len < bytes.size(); len++) {
+        EXPECT_FALSE(DecodeEvent(std::span<const uint8_t>(bytes.data(), len)).has_value()) << len;
+    }
+    bytes.push_back(0); // trailing byte
+    EXPECT_FALSE(DecodeEvent(bytes).has_value());
+}
+
+TEST(Messages, PlayerStateCarriesColorAndTeam) {
+    PlayerState s;
+    s.colorR = 1;
+    s.colorG = 2;
+    s.colorB = 3;
+    s.team = 4;
+    std::optional<PlayerState> out = DecodePlayerState(EncodePlayerState(s));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->colorR, 1);
+    EXPECT_EQ(out->colorB, 3);
+    EXPECT_EQ(out->team, 4);
+}
+
+TEST(Messages, ObjectStatesRoundTripAndLimits) {
+    ObjectStates in;
+    in.sceneNum = 0x52;
+    in.layer = 1;
+    ObjectState platform; // moving: position only this frame
+    platform.room = 3;
+    platform.listIndex = 7;
+    platform.actorId = 0x1A3;
+    platform.pos = { -120.0f, 300.5f, 42.0f };
+    platform.shapeRot = { 0, -16384, 5 };
+    platform.worldRot = { 1, 2, 3 };
+    platform.scale = { 0.1f, 0.1f, 0.1f };
+    ObjectState block = platform; // with its memory this time
+    block.listIndex = 8;
+    block.body = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    block.slotKinds = { 0, 1 };
+    in.objects = { platform, block };
+    std::vector<uint8_t> full = EncodeObjectStates(in);
+    std::optional<ObjectStates> out = DecodeObjectStates(full);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+
+    for (size_t len = 0; len < full.size(); len++) {
+        EXPECT_FALSE(DecodeObjectStates(std::span<const uint8_t>(full.data(), len)).has_value()) << len;
+    }
+    std::vector<uint8_t> trailing = full;
+    trailing.push_back(0);
+    EXPECT_FALSE(DecodeObjectStates(trailing).has_value());
+    std::vector<uint8_t> tooMany = { static_cast<uint8_t>(MessageType::ObjectStates), 0, 0, 0, 200 };
+    EXPECT_FALSE(DecodeObjectStates(tooMany).has_value());
+
+    ObjectStates insane = in; // a broken scale must not reach the game
+    insane.objects[0].scale.y = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(DecodeObjectStates(EncodeObjectStates(insane)).has_value());
 }

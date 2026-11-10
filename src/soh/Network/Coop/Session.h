@@ -4,8 +4,8 @@
 // This file doesn't know anything about Zelda: you give it where your Link is
 // every frame (Tick), it gives you the list of other players and where they are.
 //
-// For now: clients see the host and the host sees everyone, but two clients
-// don't see each other yet (the host would need to forward their stuff).
+// Clients only talk to the host. The host forwards each client's position /
+// pose to the other clients (Forwarded), so everyone sees everyone.
 
 #include "soh/Network/Coop/Messages.h"
 #include "soh/Network/Coop/Transport.h"
@@ -20,6 +20,7 @@
 namespace Coop {
 
 inline constexpr uint16_t kDefaultPort = 27720;
+inline constexpr PeerId kRelayedPeerBase = 0x40000000;
 
 enum class SessionRole : uint8_t {
     Off,
@@ -29,7 +30,9 @@ enum class SessionRole : uint8_t {
 };
 
 struct RemotePlayer {
-    PeerId peer = 0;
+    PeerId peer = 0;      // network peer; for a relayed player a made-up one (kRelayedPeerBase + id)
+    uint32_t id = 0;      // session-wide player id (kHostPlayerId for the host)
+    bool relayed = false; // client side: another client, we hear about them through the host
     std::string name;
     uint32_t pingMs = 0;
     std::optional<PlayerState> state; // nullopt until the first PlayerState arrives
@@ -78,6 +81,19 @@ class Session {
     }
     uint16_t Port() const; // listening port when hosting, 0 otherwise
 
+    // Our player id: kHostPlayerId when hosting, the one the host gave us once
+    // connected, 0 before that.
+    uint32_t SelfId() const {
+        return mSelfId;
+    }
+    const RemotePlayer* FindById(uint32_t id) const;
+
+    // --- small gameplay events (see EventKind) ---
+    // Sent to everyone (the host passes it on). The game file that owns the kind
+    // decides what's in `data`.
+    void SendEvent(EventKind kind, std::vector<uint8_t> data);
+    std::vector<Event> TakeEvents();
+
     // --- flags (chests, switches, story events...) ---
     // How it works: when a client loads their save it asks the host for all of
     // its flags (snapshot) and takes them. After that every single change is
@@ -118,6 +134,13 @@ class Session {
     void SendThingStates(const ThingStates& states);
     std::vector<ThingStates> TakeThingStates();
 
+    // --- moving things in the world (CoopObjects.cpp) ---
+    // Host only: where our platforms / blocks are this frame. Only the host
+    // sends these, so there's nothing to pass on.
+    void SendObjectStates(const ObjectStates& states);
+    // Client: the newest one from the host (older ones are dropped).
+    std::optional<ObjectStates> TakeObjectStates();
+
   private:
     // host: pass a client's message on to the other clients (not back to the sender)
     void RelayToOthers(PeerId from, std::span<const uint8_t> payload, Channel channel = Channel::Ordered);
@@ -125,8 +148,11 @@ class Session {
 
     void HandleEvent(TransportEvent& ev);
     void HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload);
+    // host: pass a client's state / pose on to the other clients
+    void Forward(const RemotePlayer& from, std::span<const uint8_t> payload);
     void SendTo(PeerId peer, Channel channel, std::span<const uint8_t> bytes);
     RemotePlayer* Find(PeerId peer);
+    RemotePlayer& RelayedPlayer(uint32_t id, const std::string& name);
     void Log(const std::string& line) const;
 
     Logger mLogger;
@@ -145,6 +171,10 @@ class Session {
     std::vector<ItemGiven> mItemsIn;
     std::vector<DungeonItems> mDungeonItemsIn;
     std::vector<ThingStates> mThingsIn; // one per owner, newest wins
+    std::vector<Event> mEventsIn;
+    std::optional<ObjectStates> mObjectStatesIn;
+    uint32_t mSelfId = 0;
+    uint32_t mNextId = kHostPlayerId + 1; // host: next id to give out
 };
 
 } // namespace Coop

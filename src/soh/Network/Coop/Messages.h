@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace Coop {
@@ -28,7 +29,82 @@ enum class MessageType : uint8_t {
     ItemGiven = 9,           // Ordered channel: someone got an item, everyone gets it (relayed)
     DungeonItems = 10,       // Ordered channel: keys / map / compass of one dungeon (relayed)
     ThingStates = 11,        // Snapshot channel: what a player carries / threw / their bombs (relayed)
+    Welcome = 12,            // Ordered channel, host -> new client: "your player id is X"
+    Forwarded = 13,          // host -> clients: another client's PlayerState / PlayerPose (so clients see each other)
+    PeerLeft = 14,           // Ordered channel, host -> clients: player X left
+    Event = 15,              // Ordered channel: small gameplay event (sound, damage, rando check...), relayed
+    ObjectStates = 16,       // Snapshot channel, host -> clients: moving platforms, blocks, windmill... (CoopObjects)
 };
+
+// Player ids are the same for everyone in the session: the host is 1, clients
+// get 2, 3... from the host when they join (Welcome).
+inline constexpr uint32_t kHostPlayerId = 1;
+
+struct Welcome {
+    uint32_t playerId = 0;
+    bool operator==(const Welcome&) const = default;
+};
+std::vector<uint8_t> EncodeWelcome(const Welcome& w);
+std::optional<Welcome> DecodeWelcome(std::span<const uint8_t> bytes);
+
+// A client's PlayerState / PlayerPose passed on by the host. `inner` is the
+// original message as the client sent it.
+struct Forwarded {
+    uint32_t origin = 0;
+    std::string name;
+    std::vector<uint8_t> inner;
+    bool operator==(const Forwarded&) const = default;
+};
+std::vector<uint8_t> EncodeForwarded(const Forwarded& f);
+std::optional<Forwarded> DecodeForwarded(std::span<const uint8_t> bytes);
+
+struct PeerLeft {
+    uint32_t playerId = 0;
+    bool operator==(const PeerLeft&) const = default;
+};
+std::vector<uint8_t> EncodePeerLeft(const PeerLeft& p);
+std::optional<PeerLeft> DecodePeerLeft(std::span<const uint8_t> bytes);
+
+// Small gameplay events. Each feature (one file on the game side) owns its kind
+// and the bytes in `data`: the network only carries them and passes them on.
+// Kinds are reserved here so files never fight over a number.
+enum class EventKind : uint8_t {
+    PlayerSfx = 1,          // a sound Link made (Anchor PlayerSfx)
+    OcarinaNote = 2,        // a note on the ocarina (Anchor OcarinaSfx)
+    DamagePlayer = 3,       // PvP: "I hit player X" (Anchor DamagePlayer)
+    GameComplete = 4,       // someone beat Ganon (Anchor GameComplete)
+    CheckStatus = 5,        // randomizer check status changed (Anchor SetCheckStatus)
+    EntranceDiscovered = 6, // randomizer entrance discovered (Anchor EntranceDiscovered)
+    BeansCount = 7,         // magic beans count (Anchor UpdateBeansCount)
+    RoomState = 8,          // host settings: pvp, show locations, teleport (Anchor UpdateRoomState)
+    GsFlags = 9,            // gold skulltula flags (Anchor SetFlag doesn't see them, see CoopFlags)
+    LifeState = 10,         // downed / dead / revived (TrueCoop PlayerLifeState)
+    RupeeChange = 11,       // shared rupees (TrueCoop RupeeChange)
+    BgmSync = 12,           // music (TrueCoop BgmSync)
+    CutsceneSync = 13,      // cutscenes (TrueCoop CutsceneSync)
+    BossEntry = 14,         // entering a boss room (TrueCoop BossEntry)
+    ActorSpawn = 15,        // dynamic actors (TrueCoop EnemySpawn / EnemyDespawn)
+    ActorDespawn = 16,
+    ObjectState = 17,       // moving platforms / switches / windmill...
+    Warp = 18,              // warp together (TrueCoop CoopWarp)
+    Resync = 19,            // "send me everything again" (Anchor RequestTeamState button)
+    EnemyRoster = 20,       // which enemies are still alive (TrueCoop EnemyRoster)
+    Custom1 = 40,           // free for later features
+    Custom2 = 41,
+    Custom3 = 42,
+    Custom4 = 43,
+};
+
+inline constexpr size_t kMaxEventData = 4096;
+
+struct Event {
+    uint32_t origin = 0; // player id of who sent it (set by the host when it relays)
+    EventKind kind = EventKind::PlayerSfx;
+    std::vector<uint8_t> data;
+    bool operator==(const Event&) const = default;
+};
+std::vector<uint8_t> EncodeEvent(const Event& e);
+std::optional<Event> DecodeEvent(std::span<const uint8_t> bytes);
 
 // Someone got an item. Same ids as SoH's item tables: modId 0 = vanilla
 // GetItemID, 1 = randomizer RandomizerGet.
@@ -213,6 +289,9 @@ struct PlayerState {
     // of a scene loads (which enemies, which NPCs), it has to be the same for everyone
     uint16_t dayTime = 0;
     bool night = false;
+    // the player's color (tunic tint + minimap arrow), picked in the menu. Same idea as Anchor's
+    uint8_t colorR = 100, colorG = 255, colorB = 100;
+    uint8_t team = 0; // Anchor's teams (PvP / who sees who on the map)
 };
 
 // Link's skeleton has 22 limbs + 2 extra slots the animation code uses.
@@ -227,6 +306,7 @@ struct PlayerPose {
     Vec3i16 joints[kPoseJointCount];
     Vec3i16 upperLimbRot;
     Vec3i16 prevTransl;
+    int16_t rotX = 0, rotZ = 0; // shape.rot x/z (yaw is in PlayerState)
     uint8_t movementFlags = 0;
     int8_t currentBoots = 0;
     int8_t currentShield = 0;
@@ -260,5 +340,37 @@ std::optional<MessageType> PeekType(std::span<const uint8_t> bytes);
 std::vector<uint8_t> EncodePlayerState(const PlayerState& state);
 // nullopt if truncated, trailing bytes, wrong type, or position not finite / out of range.
 std::optional<PlayerState> DecodePlayerState(std::span<const uint8_t> bytes);
+
+// --- moving things in the world (CoopObjects.cpp) ---
+// Platforms, push blocks, windmill blades, elevators... The host runs them and
+// sends where they are; clients freeze their copy and copy it. Same id as
+// enemies: room + position in the room's actor list (room = where it spawned).
+inline constexpr size_t kMaxObjects = 64;
+
+struct ObjectState {
+    int8_t room = 0;
+    int16_t listIndex = 0;
+    int16_t actorId = 0;
+    Vec3f32 pos;
+    Vec3i16 shapeRot;
+    Vec3i16 worldRot;
+    Vec3f32 scale;
+    // same "rest of the actor's memory" as EnemyState. Can be empty: the host
+    // only sends it every few frames, the position comes every frame
+    std::vector<uint8_t> body;
+    std::vector<uint8_t> slotKinds;
+    bool operator==(const ObjectState&) const = default;
+};
+
+struct ObjectStates {
+    int16_t sceneNum = 0;
+    uint8_t layer = 0;
+    std::vector<ObjectState> objects;
+    bool operator==(const ObjectStates&) const = default;
+};
+
+std::vector<uint8_t> EncodeObjectStates(const ObjectStates& states);
+// nullopt if truncated, too many entries, trailing bytes, or a position/scale isn't a sane number.
+std::optional<ObjectStates> DecodeObjectStates(std::span<const uint8_t> bytes);
 
 } // namespace Coop

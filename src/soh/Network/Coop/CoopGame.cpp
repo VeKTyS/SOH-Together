@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <mutex>
 #include <optional>
 
@@ -35,8 +36,6 @@ extern PlayState* gPlayState;
 namespace SohGui {
 extern std::shared_ptr<SohMenu> mSohMenu;
 } // namespace SohGui
-
-#define CVAR_COOP(var) CVAR_REMOTE("Coop." var)
 
 namespace {
 
@@ -64,7 +63,7 @@ uint64_t LocalBuildHash() {
 Coop::Hello MakeHello() {
     Coop::Hello hello;
     hello.buildHash = LocalBuildHash();
-    hello.seedHash = 0; // no randomizer support yet
+    hello.seedHash = CoopGame::SeedHash(); // CoopRando.cpp
     hello.playerName = CVarGetString(CVAR_COOP("Name"), "");
     return hello;
 }
@@ -93,6 +92,11 @@ Coop::PlayerState ReadLocalState() {
     state.entranceIndex = gSaveContext.entranceIndex;
     state.dayTime = gSaveContext.dayTime;
     state.night = gSaveContext.nightFlag != 0;
+    Color_RGB8 color = CoopGame::OwnColor();
+    state.colorR = color.r;
+    state.colorG = color.g;
+    state.colorB = color.b;
+    state.team = CoopGame::OwnTeam();
     return state;
 }
 
@@ -159,6 +163,29 @@ void FollowHostTime() {
     }
 }
 
+// Feature files' frame and event callbacks (see CoopGame.h)
+std::map<std::string, std::function<void()>>& FrameCallbacks() {
+    static std::map<std::string, std::function<void()>> callbacks;
+    return callbacks;
+}
+
+std::map<Coop::EventKind, std::map<std::string, std::function<void(const Coop::Event&)>>>& EventHandlers() {
+    static std::map<Coop::EventKind, std::map<std::string, std::function<void(const Coop::Event&)>>> handlers;
+    return handlers;
+}
+
+void DispatchEvents() {
+    for (const Coop::Event& e : GetSession().TakeEvents()) {
+        auto it = EventHandlers().find(e.kind);
+        if (it == EventHandlers().end()) {
+            continue; // nobody handles this kind (yet)
+        }
+        for (auto& [name, fn] : it->second) {
+            fn(e);
+        }
+    }
+}
+
 void OnFrame() {
     std::lock_guard lock(CoopGame::Mutex());
     gLocalState = ReadLocalState();
@@ -178,6 +205,12 @@ void OnFrame() {
     auto t3 = std::chrono::steady_clock::now();
     CoopGame::UpdateItems();
     CoopGame::UpdateThings();
+    if (CoopGame::SessionActive()) {
+        DispatchEvents();
+        for (auto& [name, fn] : FrameCallbacks()) {
+            fn();
+        }
+    }
 
     // every ~10 s while connected, how long our part of the frame takes (to chase lag)
     static double sNet = 0, sEnemies = 0, sMax = 0;
@@ -212,6 +245,67 @@ std::string Where(const Coop::PlayerState& s) {
     return scene + ", room " + std::to_string(s.roomNum) + (s.linkAge == LINK_AGE_CHILD ? ", child" : ", adult");
 }
 
+// Scenes Anchor won't teleport into (soh/Network/Anchor/Packets/RequestTeleport.cpp,
+// CanTeleportTo): their entrance/room data doesn't put you back where they stand.
+const char* SceneTeleportBlocker(const Coop::PlayerState& them) {
+    switch (them.sceneNum) {
+        case SCENE_ID_MAX:
+        case SCENE_GROTTOS:
+        case SCENE_MARKET_DAY:
+        case SCENE_MARKET_NIGHT:
+        case SCENE_MARKET_RUINS:
+        case SCENE_MARKET_ENTRANCE_DAY:
+        case SCENE_MARKET_ENTRANCE_NIGHT:
+        case SCENE_MARKET_ENTRANCE_RUINS:
+        case SCENE_TEMPLE_OF_TIME_EXTERIOR_DAY:
+        case SCENE_TEMPLE_OF_TIME_EXTERIOR_NIGHT:
+        case SCENE_TEMPLE_OF_TIME_EXTERIOR_RUINS:
+        case SCENE_BACK_ALLEY_DAY:
+        case SCENE_BACK_ALLEY_NIGHT:
+            return "Can't teleport into that place (grottos, market, Temple of Time outside, back alley)";
+        case SCENE_OUTSIDE_GANONS_CASTLE:
+            if (gSaveContext.linkAge == LINK_AGE_CHILD) {
+                return "Child Link can't go outside Ganon's Castle";
+            }
+            break;
+        case SCENE_HYRULE_CASTLE:
+            if (gSaveContext.linkAge == LINK_AGE_ADULT) {
+                return "Adult Link can't go to Hyrule Castle";
+            }
+            break;
+        default:
+            break;
+    }
+    return nullptr;
+}
+
+void DrawOwnLook() {
+    // color: your tunic tint and minimap arrow, same idea as Anchor's
+    Color_RGB8 c = CoopGame::OwnColor();
+    float rgb[3] = { c.r / 255.0f, c.g / 255.0f, c.b / 255.0f };
+    if (ImGui::ColorEdit3("Your color", rgb, ImGuiColorEditFlags_NoInputs)) {
+        Color_RGB8 out = { static_cast<uint8_t>(rgb[0] * 255), static_cast<uint8_t>(rgb[1] * 255),
+                           static_cast<uint8_t>(rgb[2] * 255) };
+        CVarSetColor24(CVAR_COOP("Color.Value"), out);
+        SaveCVars();
+    }
+    bool minimap = CVarGetInteger(CVAR_COOP("ShowOnMinimap"), 1) != 0;
+    if (ImGui::Checkbox("Show teammates on the minimap", &minimap)) {
+        CVarSetInteger(CVAR_COOP("ShowOnMinimap"), minimap ? 1 : 0);
+        SaveCVars();
+    }
+    bool tint = CVarGetInteger(CVAR_COOP("TintTunics"), 1) != 0;
+    if (ImGui::Checkbox("Tunics in each player's color", &tint)) {
+        CVarSetInteger(CVAR_COOP("TintTunics"), tint ? 1 : 0);
+        SaveCVars();
+    }
+    bool fairy = CVarGetInteger(CVAR_COOP("PuppetFairy"), 1) != 0;
+    if (ImGui::Checkbox("A fairy follows each teammate", &fairy)) {
+        CVarSetInteger(CVAR_COOP("PuppetFairy"), fairy ? 1 : 0);
+        SaveCVars();
+    }
+}
+
 void DrawPlayer(const Coop::RemotePlayer& p) {
     ImGui::Text("%s  -  %u ms", p.name.c_str(), p.pingMs);
     if (!p.state) {
@@ -222,6 +316,12 @@ void DrawPlayer(const Coop::RemotePlayer& p) {
 
     // grayed out with the reason on hover when it's not possible right now
     const char* blocker = Coop::TeleportBlocker(gLocalState, *p.state, ENTR_MAX);
+    if (blocker == nullptr) {
+        blocker = SceneTeleportBlocker(*p.state);
+    }
+    if (blocker == nullptr) {
+        blocker = CoopGame::RoomTeleportBlocker(p);
+    }
     ImGui::PushID(static_cast<int>(p.peer));
     ImGui::BeginDisabled(blocker != nullptr || gTeleportTarget.has_value());
     if (ImGui::SmallButton(("Teleport to " + p.name).c_str())) {
@@ -259,6 +359,7 @@ void DrawOff(Coop::Session& session) {
     if (name.empty()) {
         ImGui::TextDisabled("Pick a name first, your friend will see it.");
     }
+    DrawOwnLook();
     ImGui::Spacing();
 
     ImGui::BeginDisabled(name.empty());
@@ -314,6 +415,8 @@ void DrawHosting(Coop::Session& session) {
     ImGui::TextDisabled("Not on the same network? They need your public IP and UDP port %u", session.Port());
     ImGui::TextDisabled("open on your router (or use Tailscale).");
 
+    DrawOwnLook();
+    CoopGame::DrawRoomSettings();
     ImGui::SeparatorText("Players");
     if (session.Players().empty()) {
         ImGui::TextDisabled("Nobody yet...");
@@ -340,6 +443,11 @@ void DrawClient(Coop::Session& session) {
             } else {
                 ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "Getting the host's world... (the host must be in game)");
             }
+        }
+        DrawOwnLook();
+        CoopGame::DrawRoomSettings();
+        if (gLocalState.inGame && UIWidgets::Button("Get the host's world again", UIWidgets::ButtonOptions())) {
+            CoopGame::RequestResync();
         }
         for (const Coop::RemotePlayer& p : session.Players()) {
             DrawPlayer(p);
@@ -387,6 +495,7 @@ void RegisterCoopFrameHook() {
     CoopGame::RegisterItemHooks();
     CoopGame::RegisterWorldHooks();
     CoopGame::RegisterThingHooks();
+    CoopGame::RegisterMinimapHooks();
 }
 
 } // namespace
@@ -415,6 +524,51 @@ std::recursive_mutex& Mutex() {
 
 const Coop::PlayerState& LocalState() {
     return gLocalState;
+}
+
+void OnEveryFrame(const std::string& name, std::function<void()> fn) {
+    std::lock_guard lock(Mutex());
+    FrameCallbacks()[name] = std::move(fn);
+}
+
+void OnEvent(Coop::EventKind kind, const std::string& name, std::function<void(const Coop::Event&)> fn) {
+    std::lock_guard lock(Mutex());
+    EventHandlers()[kind][name] = std::move(fn);
+}
+
+void SendEvent(Coop::EventKind kind, std::vector<uint8_t> data) {
+    std::lock_guard lock(Mutex());
+    if (SessionActive()) {
+        GetSession().SendEvent(kind, std::move(data));
+    }
+}
+
+uint32_t SelfId() {
+    return GetSession().SelfId();
+}
+
+bool SessionActive() {
+    Coop::SessionRole role = GetSession().Role();
+    return role == Coop::SessionRole::Hosting || role == Coop::SessionRole::Connected;
+}
+
+std::string PlayerName(uint32_t id) {
+    std::lock_guard lock(Mutex());
+    if (const Coop::RemotePlayer* p = GetSession().FindById(id)) {
+        return p->name;
+    }
+    return "Teammate";
+}
+
+Color_RGB8 OwnColor() {
+    return CVarGetColor24(CVAR_COOP("Color.Value"), Color_RGB8{ 100, 255, 100 });
+}
+
+Color_RGB8 PlayerColor(const Coop::RemotePlayer& player) {
+    if (!player.state) {
+        return Color_RGB8{ 100, 255, 100 };
+    }
+    return Color_RGB8{ player.state->colorR, player.state->colorG, player.state->colorB };
 }
 
 } // namespace CoopGame

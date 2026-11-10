@@ -486,3 +486,63 @@ TEST(SessionThings, ClientThingsReachTheOtherClientLatestOnly) {
     EXPECT_EQ(atBob.back().owner, 42u);
     EXPECT_EQ(atHost.back().things.size(), 1u);
 }
+
+TEST(SessionRelay, ClientsGetIdsAndSeeEachOther) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    // alice sees host + bob, bob sees host + alice, all with a state
+    auto seesAll = [](const Session& s) {
+        return s.Players().size() == 2 && s.Players()[0].state && s.Players()[1].state;
+    };
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return seesAll(alice) && seesAll(bob); }));
+    EXPECT_EQ(host.SelfId(), kHostPlayerId);
+    EXPECT_NE(alice.SelfId(), 0u);
+    EXPECT_NE(alice.SelfId(), bob.SelfId());
+    // the host stays first (snapshot requests go to Players()[0])
+    EXPECT_EQ(alice.Players()[0].id, kHostPlayerId);
+    EXPECT_FALSE(alice.Players()[0].relayed);
+    EXPECT_TRUE(alice.Players()[1].relayed);
+    EXPECT_EQ(alice.Players()[1].name, "Bob");
+    EXPECT_EQ(alice.Players()[1].id, bob.SelfId());
+
+    // bob leaves: alice forgets him
+    bob.Stop();
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.Players().size() == 1; }));
+    EXPECT_EQ(alice.Players()[0].id, kHostPlayerId);
+}
+
+TEST(SessionRelay, EventsReachEveryoneWithTheRealSender) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.SelfId() != 0 && bob.SelfId() != 0; }));
+
+    alice.SendEvent(EventKind::PlayerSfx, { 0x12, 0x34 });
+    std::vector<Event> atHost, atBob, atAlice;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        for (auto& e : host.TakeEvents())
+            atHost.push_back(e);
+        for (auto& e : bob.TakeEvents())
+            atBob.push_back(e);
+        for (auto& e : alice.TakeEvents())
+            atAlice.push_back(e);
+        return !atHost.empty() && !atBob.empty();
+    }));
+    EXPECT_EQ(atHost[0].origin, alice.SelfId());
+    EXPECT_EQ(atBob[0].origin, alice.SelfId());
+    EXPECT_EQ(atBob[0].kind, EventKind::PlayerSfx);
+    EXPECT_EQ(atBob[0].data, (std::vector<uint8_t>{ 0x12, 0x34 }));
+    EXPECT_TRUE(atAlice.empty()); // not echoed back
+
+    host.SendEvent(EventKind::RoomState, { 1 });
+    std::vector<Event> fromHost;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        for (auto& e : alice.TakeEvents())
+            fromHost.push_back(e);
+        return !fromHost.empty();
+    }));
+    EXPECT_EQ(fromHost[0].origin, kHostPlayerId);
+}

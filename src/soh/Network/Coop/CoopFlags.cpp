@@ -1,30 +1,38 @@
 // Flags = the little on/off bits the game uses to remember stuff: chest
 // opened, door unlocked, room cleared, rupee picked up, story events...
 //
-// - When a client loads their save, they ask the host for all its flags and
-//   take them (so they end up in the host's world).
+// - When a client loads their save, they ask the host for its whole save state
+//   (flags + inventory, Anchor's "team state") and merge it in, so they end up
+//   in the host's world. The "Resync" button asks for it again.
 // - After that, every flag that goes up OR down is sent to the others.
+// - Gold skulltula flags don't always fire a hook, so we watch them every frame.
 //
-// Some flags are left alone on purpose (see ShouldSync). Things NOT handled yet:
-// inventory (so the item from a chest someone else opened isn't yours), and
-// actors already on screen don't always notice a flag changed until you re-enter
-// the room (a chest opened by your friend stays closed for you until then).
+// Some flags are left alone on purpose (see ShouldSync). Actors already on
+// screen don't always notice a flag changed until you re-enter the room,
+// CoopWorld.cpp pokes the common ones.
 
 #include "soh/Network/Coop/CoopGame.h"
+#include "soh/Network/Coop/Wire.h"
 
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
+#include "soh/Notification/Notification.h"
 
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <cstring>
 
 extern "C" {
 #include "z64.h"
 #include "macros.h"
 #include "variables.h"
 #include "functions.h"
+#include "soh/Enhancements/randomizer/ShuffleTradeItems.h"
 extern PlayState* gPlayState;
 }
+
+// libultra's r4300.h has a U32(x) macro (pulled in by the headers above), it breaks ByteWriter::U32
+#undef U32
 
 namespace {
 
@@ -35,6 +43,10 @@ bool sSnapshotApplied = false;
 std::chrono::steady_clock::time_point sLastRequest;
 // Host side: people who asked for our flags while we weren't in game yet.
 std::vector<Coop::PeerId> sPendingRequests;
+
+// Gold skulltula flags as we last saw / sent them
+bool sGsWatched = false;
+s32 sLastGsFlags[ARRAY_COUNT(gSaveContext.gsFlags)];
 
 // Which flags we share. Copied the exceptions from Anchor, they found these the hard way.
 bool ShouldSync(int16_t scene, int16_t type, int16_t flag) {
@@ -48,10 +60,10 @@ bool ShouldSync(int16_t scene, int16_t type, int16_t flag) {
         case FLAG_ITEM_GET_INF:
         case FLAG_INF_TABLE:
         case FLAG_RANDOMIZER_INF:
+        case FLAG_EVENT_INF: // Anchor sends every OnFlagSet, these included
             return true;
         default:
-            // EVENT_INF is temporary stuff (minigames, timers), GS tokens also
-            // need the skulltula count to be shared: later.
+            // GS tokens: watched every frame instead (see WatchGsFlags)
             return false;
     }
     // collectible flag 0 means "no flag" (hearts/rupees from grass and pots),
@@ -95,6 +107,8 @@ bool IsValid(const Coop::FlagChange& c) {
                 return index < ARRAY_COUNT(gSaveContext.infTable);
             case FLAG_RANDOMIZER_INF:
                 return index < ARRAY_COUNT(gSaveContext.ship.randomizerInf);
+            case FLAG_EVENT_INF:
+                return index < ARRAY_COUNT(gSaveContext.eventInf);
             default:
                 return false;
         }
@@ -155,6 +169,61 @@ void RemoveCollectible(int16_t flag) {
     });
 }
 
+// Copied from Anchor Packets/SetFlag.cpp: if King Zora moved, and the player
+// has Ruto's Letter, convert it to an empty bottle
+void AfterGlobalFlagSet(int16_t type, int16_t flag) {
+    if (type == FLAG_EVENT_CHECK_INF && flag == EVENTCHKINF_KING_ZORA_MOVED &&
+        Inventory_HasSpecificBottle(ITEM_LETTER_RUTO)) {
+        Inventory_ReplaceItem(gPlayState, ITEM_LETTER_RUTO, ITEM_BOTTLE);
+    }
+}
+
+// Copied from Anchor Packets/UnsetFlag.cpp: an adult trade item flag went down
+// (someone traded it away), swap it for the next one in the chain
+void AfterGlobalFlagUnset(int16_t type, int16_t flag) {
+    if (type != FLAG_RANDOMIZER_INF ||
+        !(flag >= RAND_INF_ADULT_TRADES_HAS_POCKET_EGG && flag <= RAND_INF_ADULT_TRADES_HAS_CLAIM_CHECK)) {
+        return;
+    }
+    u16 itemToReplace = ITEM_POCKET_EGG;
+    switch (flag) {
+        case RAND_INF_ADULT_TRADES_HAS_POCKET_EGG:
+            itemToReplace = ITEM_POCKET_EGG;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_POCKET_CUCCO:
+            itemToReplace = ITEM_POCKET_CUCCO;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_COJIRO:
+            itemToReplace = ITEM_COJIRO;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_ODD_MUSHROOM:
+            itemToReplace = ITEM_ODD_MUSHROOM;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_ODD_POTION:
+            itemToReplace = ITEM_ODD_POTION;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_SAW:
+            itemToReplace = ITEM_SAW;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_SWORD_BROKEN:
+            itemToReplace = ITEM_SWORD_BROKEN;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_PRESCRIPTION:
+            itemToReplace = ITEM_PRESCRIPTION;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_FROG:
+            itemToReplace = ITEM_FROG;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_EYEDROPS:
+            itemToReplace = ITEM_EYEDROPS;
+            break;
+        case RAND_INF_ADULT_TRADES_HAS_CLAIM_CHECK:
+            itemToReplace = ITEM_CLAIM_CHECK;
+            break;
+    }
+    Inventory_ReplaceItem(gPlayState, itemToReplace, Randomizer_GetNextAdultTradeItem());
+}
+
 void ApplyChange(const Coop::FlagChange& c) {
     if (!IsValid(c) || !ShouldSync(c.sceneNum, c.flagType, c.flag)) {
         SPDLOG_WARN("[Coop] Ignored bad flag from network: scene {} type {} flag {:#x}", c.sceneNum, c.flagType,
@@ -164,7 +233,15 @@ void ApplyChange(const Coop::FlagChange& c) {
     // RawAction writes the bits directly, it does NOT fire the flag hooks, so
     // this won't bounce back to the network.
     if (c.sceneNum == -1) {
+        if (!c.set && c.flagType == FLAG_RANDOMIZER_INF && !IS_RANDO) {
+            return; // RawAction::UnsetFlag asserts on that outside the randomizer
+        }
         c.set ? RawAction::SetFlag(c.flagType, c.flag) : RawAction::UnsetFlag(c.flagType, c.flag);
+        if (c.set) {
+            AfterGlobalFlagSet(c.flagType, c.flag);
+        } else {
+            AfterGlobalFlagUnset(c.flagType, c.flag);
+        }
     } else {
         c.set ? RawAction::SetSceneFlag(c.sceneNum, c.flagType, c.flag)
               : RawAction::UnsetSceneFlag(c.sceneNum, c.flagType, c.flag);
@@ -211,29 +288,136 @@ bool ApplySnapshot(const Coop::FlagSnapshot& s) {
         SPDLOG_WARN("[Coop] Host's flags don't fit our save layout, ignored");
         return false;
     }
+    // ApplySaveBlob (CoopItems.cpp) did the hearts / magic / inventory / rupees /
+    // gold skulltulas / rando checks part. The flags part is below.
+    // Copied from Anchor Packets/UpdateTeamState.cpp HandlePacket_UpdateTeamState.
     for (size_t i = 0; i < s.scenes.size(); i++) {
         SavedSceneFlags& f = gSaveContext.sceneFlags[i];
         const auto& in = s.scenes[i];
+        bool current = gPlayState != nullptr && gPlayState->sceneNum == static_cast<s16>(i);
+        // Anchor reads our bits from the save copy, but the scene we stand in
+        // keeps its live switches in actorCtx (the save copy can be old)
+        u32 localSwch = current ? gPlayState->actorCtx.flags.swch : f.swch;
+        u32 swch = in[1];
+        u32 keepMask = 0;
+        if (i == SCENE_WATER_TEMPLE) {
+            // Keep water temple water level flags
+            keepMask = (1 << 0x1C) | (1 << 0x1D) | (1 << 0x1E);
+        } else if (i == SCENE_FOREST_TEMPLE) {
+            // Keep forest temple elevator flag
+            keepMask = (1 << 0x1B);
+        } else if (i == SCENE_GANONS_TOWER_COLLAPSE_EXTERIOR) {
+            // Keep collapse timer flag
+            keepMask = (1 << 0x17);
+        }
+        swch = (swch & ~keepMask) | (localSwch & keepMask);
+
         f.chest = in[0];
-        f.swch = in[1];
+        f.swch = swch;
         f.clear = in[2];
         f.collect = in[3];
-        f.unk = in[4];
-        f.rooms = in[5];
-        f.floors = in[6];
+        // Anchor's json doesn't carry these 3 so it ends up zeroing them (wipes
+        // the visited rooms on the map). We merge them instead: map knowledge adds up.
+        f.unk |= in[4];
+        f.rooms |= in[5];
+        f.floors |= in[6];
+        if (current) {
+            gPlayState->actorCtx.flags.chest = f.chest;
+            gPlayState->actorCtx.flags.swch = f.swch;
+            gPlayState->actorCtx.flags.clear = f.clear;
+            gPlayState->actorCtx.flags.collect = f.collect;
+        }
     }
-    if (gPlayState != nullptr && gPlayState->sceneNum >= 0 && (size_t)gPlayState->sceneNum < s.scenes.size()) {
-        const auto& cur = s.scenes[gPlayState->sceneNum];
-        gPlayState->actorCtx.flags.chest = cur[0];
-        gPlayState->actorCtx.flags.swch = cur[1];
-        gPlayState->actorCtx.flags.clear = cur[2];
-        gPlayState->actorCtx.flags.collect = cur[3];
+
+    // Story flags are merged (|=), not overwritten: what we did stays done
+    for (size_t i = 0; i < s.eventChkInf.size(); i++) {
+        gSaveContext.eventChkInf[i] |= s.eventChkInf[i];
     }
-    std::copy(s.eventChkInf.begin(), s.eventChkInf.end(), gSaveContext.eventChkInf);
-    std::copy(s.itemGetInf.begin(), s.itemGetInf.end(), gSaveContext.itemGetInf);
-    std::copy(s.infTable.begin(), s.infTable.end(), gSaveContext.infTable);
-    std::copy(s.randomizerInf.begin(), s.randomizerInf.end(), gSaveContext.ship.randomizerInf);
+    for (size_t i = 0; i < s.itemGetInf.size(); i++) {
+        gSaveContext.itemGetInf[i] |= s.itemGetInf[i];
+    }
+    // Skip last row of infTable, don't want to sync swordless flag
+    for (size_t i = 0; i + 1 < s.infTable.size(); i++) {
+        gSaveContext.infTable[i] |= s.infTable[i];
+    }
+    for (size_t i = 0; i < s.randomizerInf.size(); i++) {
+        gSaveContext.ship.randomizerInf[i] |= s.randomizerInf[i];
+    }
+
+    // Ensure ganon barrier state matches trials
+    if (gSaveContext.eventChkInf[10] & 0x2000 && gSaveContext.eventChkInf[11] & 0xFC00) {
+        gSaveContext.eventChkInf[12] |= 0x8;
+    }
+
+    // the skulltula flags we just got are the host's, don't send them back
+    memcpy(sLastGsFlags, gSaveContext.gsFlags, sizeof(sLastGsFlags));
+    sGsWatched = true;
+
+    Notification::Emit({
+        .message = "Save updated from team",
+    });
     return true;
+}
+
+// --- gold skulltulas ---
+// EnSi fires OnFlagSet(FLAG_GS_TOKEN) in vanilla, but the randomizer gives
+// tokens other ways. So like the wallet: compare with last frame, send the
+// whole array when it changed, the others OR it in (Anchor's SET_FLAG does
+// SET_GS_FLAGS, same thing).
+void WatchGsFlags() {
+    if (!sGsWatched) {
+        memcpy(sLastGsFlags, gSaveContext.gsFlags, sizeof(sLastGsFlags));
+        sGsWatched = true;
+        return;
+    }
+    if (memcmp(sLastGsFlags, gSaveContext.gsFlags, sizeof(sLastGsFlags)) == 0) {
+        return;
+    }
+    memcpy(sLastGsFlags, gSaveContext.gsFlags, sizeof(sLastGsFlags));
+    Coop::ByteWriter w;
+    for (s32 v : sLastGsFlags) {
+        w.U32(static_cast<uint32_t>(v));
+    }
+    CoopGame::SendEvent(Coop::EventKind::GsFlags, w.Take());
+    SPDLOG_INFO("[Coop] Gold skulltula flags sent");
+}
+
+void OnGsFlags(const Coop::Event& e) {
+    Coop::ByteReader r(e.data);
+    uint32_t in[ARRAY_COUNT(gSaveContext.gsFlags)];
+    for (uint32_t& v : in) {
+        if (!r.U32(v)) {
+            return;
+        }
+    }
+    bool hosting = CoopGame::Session().Role() == Coop::SessionRole::Hosting;
+    if (r.Remaining() != 0 || !CoopGame::LocalState().inGame || (!hosting && !sSnapshotApplied)) {
+        return; // before the snapshot: it's in there already
+    }
+    for (size_t i = 0; i < ARRAY_COUNT(gSaveContext.gsFlags); i++) {
+        gSaveContext.gsFlags[i] |= static_cast<s32>(in[i]);
+        if (sGsWatched) {
+            sLastGsFlags[i] |= static_cast<s32>(in[i]); // theirs, not to send back
+        }
+    }
+}
+
+// Host: send our whole state to whoever asked. Runs at the end of the frame
+// (OnEveryFrame), after this frame's flags / items / events from the others
+// are applied: they were already relayed before this snapshot, so the client
+// drops them and must find them inside.
+void SendPendingSnapshots() {
+    Coop::Session& session = CoopGame::Session();
+    if (session.Role() != Coop::SessionRole::Hosting || !CoopGame::LocalState().inGame ||
+        sPendingRequests.empty()) {
+        return;
+    }
+    Coop::FlagSnapshot snapshot = BuildSnapshot();
+    for (Coop::PeerId p : sPendingRequests) {
+        session.SendFlagSnapshot(p, snapshot);
+    }
+    SPDLOG_INFO("[Coop] Sent our flags to {} player(s)", sPendingRequests.size());
+    sPendingRequests.clear();
 }
 
 // Our own game changed a flag.
@@ -258,6 +442,23 @@ void OnLocalFlag(int16_t scene, int16_t type, int16_t flag, bool set) {
 
 namespace CoopGame {
 
+// Anchor's "Request Team State" button: ask the host for its whole state again
+// and merge it in, like when we joined. Only a client can ask (the host's
+// world is the reference).
+void RequestResync() {
+    std::lock_guard lock(Mutex());
+    Coop::Session& session = Session();
+    if (session.Role() != Coop::SessionRole::Connected) {
+        return;
+    }
+    session.TakeFlagSnapshot(); // an old answer still waiting would be stale
+    sSnapshotApplied = false;   // UpdateFlags takes the next one (and asks again every 2 s)
+    sGsWatched = false;
+    sLastRequest = std::chrono::steady_clock::now();
+    session.RequestFlagSnapshot();
+    SPDLOG_INFO("[Coop] Asked the host for its save again");
+}
+
 bool FlagsSynced() {
     return sSnapshotApplied;
 }
@@ -271,6 +472,7 @@ void UpdateFlags() {
     if (!inGame || (!hosting && !client)) {
         // flags only mean something once a save is loaded; we'll ask again then
         sSnapshotApplied = false;
+        sGsWatched = false;
         session.TakeFlagChanges();
         session.TakeFlagSnapshot();
         if (hosting) {
@@ -284,30 +486,27 @@ void UpdateFlags() {
     }
 
     if (hosting) {
+        // answered at the end of the frame, see SendPendingSnapshots
         for (Coop::PeerId p : session.TakeSnapshotRequests()) {
             sPendingRequests.push_back(p);
         }
-        if (!sPendingRequests.empty()) {
-            Coop::FlagSnapshot snapshot = BuildSnapshot();
-            for (Coop::PeerId p : sPendingRequests) {
-                session.SendFlagSnapshot(p, snapshot);
-            }
-            SPDLOG_INFO("[Coop] Sent our flags to {} player(s)", sPendingRequests.size());
-            sPendingRequests.clear();
-        }
     }
 
-    if (client && !sSnapshotApplied) {
-        if (std::optional<Coop::FlagSnapshot> snapshot = session.TakeFlagSnapshot()) {
-            sSnapshotApplied = ApplySnapshot(*snapshot);
-            if (sSnapshotApplied) {
-                SPDLOG_INFO("[Coop] Got the host's flags, we're in their world now");
+    if (client) {
+        // extra answers (we ask every 2 s) are dropped once we have one
+        std::optional<Coop::FlagSnapshot> snapshot = session.TakeFlagSnapshot();
+        if (!sSnapshotApplied) {
+            if (snapshot) {
+                sSnapshotApplied = ApplySnapshot(*snapshot);
+                if (sSnapshotApplied) {
+                    SPDLOG_INFO("[Coop] Got the host's flags, we're in their world now");
+                }
             }
-        }
-        auto now = std::chrono::steady_clock::now();
-        if (!sSnapshotApplied && now - sLastRequest > std::chrono::seconds(2)) {
-            session.RequestFlagSnapshot(); // ask again every 2 s until the host (in game) answers
-            sLastRequest = now;
+            auto now = std::chrono::steady_clock::now();
+            if (!sSnapshotApplied && now - sLastRequest > std::chrono::seconds(2)) {
+                session.RequestFlagSnapshot(); // ask again every 2 s until the host (in game) answers
+                sLastRequest = now;
+            }
         }
     }
 
@@ -318,6 +517,9 @@ void UpdateFlags() {
         for (const Coop::FlagChange& c : changes) {
             ApplyChange(c);
         }
+        WatchGsFlags();
+    } else {
+        sGsWatched = false;
     }
 }
 
@@ -328,6 +530,8 @@ void RegisterFlagHooks() {
               [](int16_t scene, int16_t type, int16_t flag) { OnLocalFlag(scene, type, flag, true); });
     COND_HOOK(OnSceneFlagUnset, true,
               [](int16_t scene, int16_t type, int16_t flag) { OnLocalFlag(scene, type, flag, false); });
+    OnEvent(Coop::EventKind::GsFlags, "CoopFlags.GsFlags", OnGsFlags);
+    OnEveryFrame("CoopFlags.Snapshots", SendPendingSnapshots);
 }
 
 } // namespace CoopGame
