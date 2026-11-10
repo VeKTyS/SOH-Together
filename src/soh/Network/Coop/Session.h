@@ -39,6 +39,11 @@ struct RemotePlayer {
 // "Refused: different game build...", "Connection lost", ...
 std::string DescribeDisconnect(DisconnectReason reason, HandshakeError error);
 
+// Why I can't teleport to `them` right now, or nullptr if I can.
+// entranceCount = how many entrances the game has (ENTR_MAX), anything outside
+// is a broken packet. The text is shown as-is in the menu.
+const char* TeleportBlocker(const PlayerState& me, const PlayerState& them, int32_t entranceCount);
+
 // Accepts "host" or "host:port" (surrounding spaces ignored); port defaults to
 // kDefaultPort. False on an empty host or an invalid port. IPv4 / host names only.
 bool ParseAddress(const std::string& text, std::string& host, uint16_t& port);

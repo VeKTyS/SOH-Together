@@ -49,6 +49,7 @@ std::vector<uint8_t> EncodePlayerState(const PlayerState& s) {
     WriteFloat(w, s.y);
     WriteFloat(w, s.z);
     w.U16(static_cast<uint16_t>(s.yaw));
+    w.U32(static_cast<uint32_t>(s.entranceIndex));
     return w.Take();
 }
 
@@ -57,9 +58,10 @@ std::optional<PlayerState> DecodePlayerState(std::span<const uint8_t> bytes) {
     PlayerState s;
     uint8_t type = 0, inGame = 0;
     uint16_t scene = 0, room = 0, yaw = 0;
+    uint32_t entrance = 0;
     if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::PlayerState) || !r.U32(s.frame) || !r.U8(inGame) ||
         inGame > 1 || !r.U16(scene) || !r.U16(room) || !r.U8(s.linkAge) || !ReadFloat(r, s.x) || !ReadFloat(r, s.y) ||
-        !ReadFloat(r, s.z) || !r.U16(yaw) || r.Remaining() != 0) {
+        !ReadFloat(r, s.z) || !r.U16(yaw) || !r.U32(entrance) || r.Remaining() != 0) {
         return std::nullopt;
     }
     if (!IsSaneCoordinate(s.x) || !IsSaneCoordinate(s.y) || !IsSaneCoordinate(s.z)) {
@@ -69,6 +71,7 @@ std::optional<PlayerState> DecodePlayerState(std::span<const uint8_t> bytes) {
     s.sceneNum = static_cast<int16_t>(scene);
     s.roomNum = static_cast<int16_t>(room);
     s.yaw = static_cast<int16_t>(yaw);
+    s.entranceIndex = static_cast<int32_t>(entrance);
     return s;
 }
 

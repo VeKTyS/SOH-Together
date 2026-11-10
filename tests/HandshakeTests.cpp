@@ -29,14 +29,14 @@ TEST(Handshake, RoundTrip) {
 
 TEST(Handshake, WireLayoutIsLittleEndian) {
     std::vector<uint8_t> bytes = EncodeHello(MakeHello());
-    // Magic "SOHT" then protocol version 1, lowest byte first.
+    // Magic "SOHT" then the protocol version, lowest byte first.
     ASSERT_GE(bytes.size(), 6u);
     EXPECT_EQ(bytes[0], 'S');
     EXPECT_EQ(bytes[1], 'O');
     EXPECT_EQ(bytes[2], 'H');
     EXPECT_EQ(bytes[3], 'T');
-    EXPECT_EQ(bytes[4], 0x01);
-    EXPECT_EQ(bytes[5], 0x00);
+    EXPECT_EQ(bytes[4], kProtocolVersion & 0xFF);
+    EXPECT_EQ(bytes[5], kProtocolVersion >> 8);
 }
 
 // Every possible truncation must fail cleanly, never read out of bounds.
@@ -59,15 +59,28 @@ TEST(Handshake, ForeignDataIsBadMagic) {
     EXPECT_EQ(DecodeHello(http).error, HandshakeError::BadMagic);
 }
 
-// A future version may change the body layout: we must report a version
-// mismatch (actionable) and not "malformed" (confusing).
+// A newer version may have a different body: we must say "update the mod",
+// not "corrupted message". Always one above the current version, so this test
+// keeps meaning the same thing when we bump kProtocolVersion.
 TEST(Handshake, FutureVersionIsProtocolMismatchNotMalformed) {
-    std::vector<uint8_t> bytes = { 'S', 'O', 'H', 'T', 0x02, 0x00, 0xFF, 0xFF, 0xFF };
+    uint16_t future = kProtocolVersion + 1;
+    std::vector<uint8_t> bytes = {
+        'S', 'O', 'H', 'T', static_cast<uint8_t>(future & 0xFF), static_cast<uint8_t>(future >> 8), 0xFF, 0xFF, 0xFF
+    };
     HelloDecodeResult out = DecodeHello(bytes);
 
     EXPECT_EQ(out.error, HandshakeError::ProtocolMismatch);
     ASSERT_TRUE(out.peerProtocol.has_value());
-    EXPECT_EQ(*out.peerProtocol, 2);
+    EXPECT_EQ(*out.peerProtocol, future);
+}
+
+// Someone still on the previous version must also get a clear "update" message.
+TEST(Handshake, OlderVersionIsProtocolMismatch) {
+    uint16_t older = kProtocolVersion - 1;
+    std::vector<uint8_t> bytes = {
+        'S', 'O', 'H', 'T', static_cast<uint8_t>(older & 0xFF), static_cast<uint8_t>(older >> 8)
+    };
+    EXPECT_EQ(DecodeHello(bytes).error, HandshakeError::ProtocolMismatch);
 }
 
 TEST(Handshake, NameLengthAboveLimitIsRejected) {
