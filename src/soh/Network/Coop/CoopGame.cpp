@@ -323,9 +323,12 @@ void RegisterCoopMenu() {
     SohGui::mSohMenu->AddWidget(path, "CoopMain", WIDGET_CUSTOM).CustomFunction(DrawCoopMenu).HideInSearch(true);
 }
 
+// SoH calls this again when you load a preset or a config file, not just at
+// boot. COND_HOOK removes the previous hook first, otherwise we'd end up
+// ticking the session 2-3 times per frame.
 void RegisterCoopFrameHook() {
     SPDLOG_INFO("[Coop] build {}", SOHT_BUILD_ID);
-    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>(OnFrame);
+    COND_HOOK(OnGameFrameUpdate, true, OnFrame);
 }
 
 } // namespace
