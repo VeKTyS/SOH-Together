@@ -24,8 +24,33 @@ enum class MessageType : uint8_t {
     FlagSnapshot = 5,        // Ordered channel: host -> client, all the flags at once
     EnemyKilled = 6,         // Ordered channel: someone killed an enemy, it dies for everyone
     EnemyStates = 7,         // Snapshot channel, host -> clients: where the host's enemies are, every frame
-    EnemyHit = 8,            // Ordered channel, client -> host: "I hit that enemy"
+    EnemyHit = 8,            // Ordered channel: "I hit that enemy" (relayed by the host)
+    ItemGiven = 9,           // Ordered channel: someone got an item, everyone gets it (relayed)
+    DungeonItems = 10,       // Ordered channel: keys / map / compass of one dungeon (relayed)
 };
+
+// Someone got an item. Same ids as SoH's item tables: modId 0 = vanilla
+// GetItemID, 1 = randomizer RandomizerGet.
+struct ItemGiven {
+    uint16_t modId = 0;
+    int16_t getItemId = 0;
+    bool operator==(const ItemGiven&) const = default;
+};
+
+std::vector<uint8_t> EncodeItemGiven(const ItemGiven& item);
+std::optional<ItemGiven> DecodeItemGiven(std::span<const uint8_t> bytes);
+
+// Small keys go up AND down (doors eat them), so we send the dungeon's
+// current values instead of "+1".
+struct DungeonItems {
+    uint16_t mapIndex = 0;
+    uint8_t items = 0; // boss key / compass / map bits
+    int8_t keys = 0;
+    bool operator==(const DungeonItems&) const = default;
+};
+
+std::vector<uint8_t> EncodeDungeonItems(const DungeonItems& d);
+std::optional<DungeonItems> DecodeDungeonItems(std::span<const uint8_t> bytes);
 
 // "That enemy is dead". An enemy is recognized by where it was placed in the
 // level: scene + layer (child/adult, day/night...) + room + its position in the
@@ -122,6 +147,9 @@ struct FlagSnapshot {
     std::vector<uint16_t> itemGetInf;
     std::vector<uint16_t> infTable;
     std::vector<uint16_t> randomizerInf;
+    // the host's inventory and such, as raw bytes: only the game side knows the
+    // layout (both games are the same build, the handshake checks it)
+    std::vector<uint8_t> saveBlob;
     bool operator==(const FlagSnapshot&) const = default;
 };
 

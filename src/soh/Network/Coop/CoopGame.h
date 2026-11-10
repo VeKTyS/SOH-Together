@@ -44,8 +44,17 @@ void RegisterFlagHooks();
 
 // --- enemies (CoopEnemies.cpp) ---
 
-// Call every frame with the session locked: kills the enemies teammates killed.
+// Call every frame with the session locked: runs/copies enemies, applies hits and kills.
 void UpdateEnemies();
 void RegisterEnemyHooks();
+
+// --- items (CoopItems.cpp) ---
+
+// Call every frame with the session locked: gives the items teammates got.
+void UpdateItems();
+void RegisterItemHooks();
+// The host's inventory for the join snapshot, and applying it on a client.
+std::vector<uint8_t> BuildSaveBlob();
+bool ApplySaveBlob(const std::vector<uint8_t>& blob);
 
 } // namespace CoopGame

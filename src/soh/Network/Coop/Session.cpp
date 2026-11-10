@@ -119,6 +119,8 @@ void Session::Stop() {
     mEnemyKillsIn.clear();
     mEnemyStatesIn.reset();
     mEnemyHitsIn.clear();
+    mItemsIn.clear();
+    mDungeonItemsIn.clear();
 }
 
 uint16_t Session::Port() const {
@@ -202,6 +204,18 @@ void Session::HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload
                 }
             }
             break;
+        case MessageType::ItemGiven:
+            if (std::optional<ItemGiven> item = DecodeItemGiven(payload)) {
+                mItemsIn.push_back(*item);
+                RelayToOthers(from.peer, payload);
+            }
+            break;
+        case MessageType::DungeonItems:
+            if (std::optional<DungeonItems> d = DecodeDungeonItems(payload)) {
+                mDungeonItemsIn.push_back(*d);
+                RelayToOthers(from.peer, payload);
+            }
+            break;
         case MessageType::EnemyHit:
             if (std::optional<EnemyHit> hit = DecodeEnemyHit(payload)) {
                 mEnemyHitsIn.push_back(*hit);
@@ -277,6 +291,22 @@ void Session::SendEnemyHit(const EnemyHit& hit) {
 
 std::vector<EnemyHit> Session::TakeEnemyHits() {
     return std::exchange(mEnemyHitsIn, {});
+}
+
+void Session::SendItemGiven(const ItemGiven& item) {
+    SendToAll(Channel::Ordered, EncodeItemGiven(item));
+}
+
+std::vector<ItemGiven> Session::TakeItemsGiven() {
+    return std::exchange(mItemsIn, {});
+}
+
+void Session::SendDungeonItems(const DungeonItems& items) {
+    SendToAll(Channel::Ordered, EncodeDungeonItems(items));
+}
+
+std::vector<DungeonItems> Session::TakeDungeonItems() {
+    return std::exchange(mDungeonItemsIn, {});
 }
 
 void Session::RequestFlagSnapshot() {

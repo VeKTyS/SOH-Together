@@ -412,3 +412,25 @@ TEST(SessionEnemies, HostHitsReachClientsForSharedHealth) {
     }));
     EXPECT_EQ(got[0].damage, 2);
 }
+
+TEST(SessionItems, ItemsAndDungeonKeysAreRelayedToEveryoneElse) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        return host.Players().size() == 2 && alice.Role() == SessionRole::Connected &&
+               bob.Role() == SessionRole::Connected;
+    }));
+    alice.SendItemGiven({ 0, 0x04 }); // fairy slingshot
+    alice.SendDungeonItems({ 0, 0x02, 1 });
+    size_t hostItems = 0, bobItems = 0, aliceItems = 0, bobKeys = 0;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        hostItems += host.TakeItemsGiven().size();
+        bobItems += bob.TakeItemsGiven().size();
+        aliceItems += alice.TakeItemsGiven().size();
+        bobKeys += bob.TakeDungeonItems().size();
+        return hostItems == 1 && bobItems == 1 && bobKeys == 1;
+    }));
+    EXPECT_EQ(aliceItems, 0u); // not echoed back
+}
