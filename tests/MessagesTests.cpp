@@ -100,6 +100,19 @@ TEST(Messages, CoordinateLimitIsInclusive) {
     EXPECT_TRUE(DecodePlayerState(EncodePlayerState(s)).has_value());
 }
 
+TEST(Messages, TimeOfDayRoundTrip) {
+    PlayerState s = MakeState();
+    s.dayTime = 0xC123;
+    s.night = true;
+    std::optional<PlayerState> out = DecodePlayerState(EncodePlayerState(s));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->dayTime, 0xC123);
+    EXPECT_TRUE(out->night);
+    std::vector<uint8_t> bad = EncodePlayerState(s);
+    bad.back() = 2; // night is 0 or 1
+    EXPECT_FALSE(DecodePlayerState(bad).has_value());
+}
+
 TEST(Messages, EntranceIndexRoundTripIncludingUnknown) {
     for (int32_t entrance : { -1, 0, 0x0EE, 0x613 }) {
         PlayerState s = MakeState();

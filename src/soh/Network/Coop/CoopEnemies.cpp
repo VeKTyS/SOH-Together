@@ -98,6 +98,9 @@ struct RoomIndex {
 };
 std::map<RoomIndex, Coop::EnemyState> sHostStates; // client: latest host state per enemy
 int sStatesAge = 1000;                             // frames since the last host packet
+size_t sLastStateCount = 0;                        // only for the log
+bool sLayerMismatchLogged = false;
+int16_t sReloadedInScene = -1; // scene we already reloaded once to match the host's version
 
 // Enemies dead for the group (ours and theirs), so they don't come back when
 // someone walks back into the room while a teammate is still in it.
@@ -652,6 +655,12 @@ void OnShouldActorUpdate(void* ptr, bool* should) {
         }
         return;
     }
+    if (!info.mirrored) {
+        SPDLOG_INFO("[Coop] Copying the host's enemy {:#x} room {} index {} (host at {:.0f} {:.0f} {:.0f}, ours at "
+                    "{:.0f} {:.0f} {:.0f})",
+                    actor->id, actor->room, index, st->second.pos.x, st->second.pos.y, st->second.pos.z,
+                    actor->world.pos.x, actor->world.pos.y, actor->world.pos.z);
+    }
     info.mirrored = true;
     ForceUncull(actor, info);
     ForwardLocalHits(actor, info);
@@ -745,6 +754,10 @@ void UpdateEnemies() {
     // host: stream our enemies while a client can see them
     bool wasStreaming = sHostStreaming;
     sHostStreaming = hosting && clientHere;
+    if (sHostStreaming != wasStreaming) {
+        SPDLOG_INFO("[Coop] {} our enemies to the teammate in this scene",
+                    sHostStreaming ? "Now sending" : "Stopped sending");
+    }
     if (sHostStreaming) {
         SendHostStates();
     } else if (wasStreaming) {
@@ -755,10 +768,30 @@ void UpdateEnemies() {
 
     // client: keep the latest picture of the host's enemies
     sStatesAge++;
-    if (states && states->sceneNum == gPlayState->sceneNum && states->layer == CurrentLayer()) {
+    if (states && (states->sceneNum != gPlayState->sceneNum || states->layer != CurrentLayer())) {
+        // same scene but not the same version of it (day/night, age...): the
+        // enemy lists don't match, everyone runs their own. Say it once.
+        if (states->sceneNum == gPlayState->sceneNum && !sLayerMismatchLogged) {
+            SPDLOG_INFO("[Coop] Host is in another version of this scene (their layer {}, ours {})", states->layer,
+                        CurrentLayer());
+            sLayerMismatchLogged = true;
+            // we follow the host's time now, so reloading the scene fixes it.
+            // Once per scene: if it's an age difference, reloading won't help.
+            if (sReloadedInScene != gPlayState->sceneNum) {
+                sReloadedInScene = gPlayState->sceneNum;
+                RequestTeleportToHost();
+            }
+        }
+    } else if (states) {
+        sLayerMismatchLogged = false;
         sHostStates.clear();
         for (const Coop::EnemyState& e : states->enemies) {
             sHostStates[{ e.room, e.listIndex }] = e;
+        }
+        if (sStatesAge >= kStaleFrames || states->enemies.size() != sLastStateCount) {
+            SPDLOG_INFO("[Coop] Host's enemies: {} in scene {:#x} layer {}", states->enemies.size(), states->sceneNum,
+                        states->layer);
+            sLastStateCount = states->enemies.size();
         }
         sStatesAge = 0;
     }
@@ -802,6 +835,7 @@ void RegisterEnemyHooks() {
         PlayState* play = va_arg(args, PlayState*);
         Actor** spawned = va_arg(args, Actor**);
         if (*should && IsDead(play, entry)) {
+            SPDLOG_INFO("[Coop] Enemy {:#x} already killed by the group, not spawning it", entry->id);
             *should = false;
             *spawned = nullptr; // the game doesn't set it when we say no
         }

@@ -172,6 +172,10 @@ struct PlayerState {
     float x = 0, y = 0, z = 0;
     int16_t yaw = 0;            // binary angle, 0x10000 = full turn
     int32_t entranceIndex = -1; // the door/loading zone they came in by, needed to teleport to them
+    // time of day. Clients follow the host's: day/night changes which version
+    // of a scene loads (which enemies, which NPCs), it has to be the same for everyone
+    uint16_t dayTime = 0;
+    bool night = false;
 };
 
 // Link's skeleton has 22 limbs + 2 extra slots the animation code uses.

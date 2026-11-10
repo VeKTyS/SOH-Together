@@ -89,6 +89,8 @@ Coop::PlayerState ReadLocalState() {
     state.z = player->actor.world.pos.z;
     state.yaw = player->actor.shape.rot.y;
     state.entranceIndex = gSaveContext.entranceIndex;
+    state.dayTime = gSaveContext.dayTime;
+    state.night = gSaveContext.nightFlag != 0;
     return state;
 }
 
@@ -139,6 +141,22 @@ void HandleTeleportRequest() {
     }
 }
 
+// Clients live at the host's time of day. Without this, one player can be in
+// the day version of a scene and the other in the night one: different enemies,
+// different NPCs. The new version shows up at the next scene load.
+void FollowHostTime() {
+    Coop::Session& session = GetSession();
+    if (session.Role() != Coop::SessionRole::Connected || !gLocalState.inGame || session.Players().empty()) {
+        return;
+    }
+    const std::optional<Coop::PlayerState>& host = session.Players()[0].state;
+    if (host && host->inGame) {
+        gSaveContext.dayTime = host->dayTime;
+        gSaveContext.skyboxTime = host->dayTime;
+        gSaveContext.nightFlag = host->night ? 1 : 0;
+    }
+}
+
 void OnFrame() {
     std::lock_guard lock(CoopGame::Mutex());
     gLocalState = ReadLocalState();
@@ -148,6 +166,7 @@ void OnFrame() {
     Coop::PlayerPose pose;
     bool hasPose = gLocalState.inGame && CoopGame::ReadLocalPose(pose);
     GetSession().Tick(gLocalState, hasPose ? &pose : nullptr);
+    FollowHostTime();
     CoopGame::UpdatePuppets();
     CoopGame::UpdateFlags();
     CoopGame::UpdateEnemies();
@@ -349,6 +368,14 @@ void RegisterCoopFrameHook() {
 } // namespace
 
 namespace CoopGame {
+
+void RequestTeleportToHost() {
+    Coop::Session& session = GetSession();
+    if (session.Role() == Coop::SessionRole::Connected && !session.Players().empty() && !gTeleportTarget) {
+        SPDLOG_INFO("[Coop] Reloading at the host's spot to get the same version of the scene");
+        gTeleportTarget = session.Players()[0].peer;
+    }
+}
 
 Coop::Session& Session() {
     static Coop::Session session([](const std::string& line) { SPDLOG_INFO("[Coop] {}", line); });

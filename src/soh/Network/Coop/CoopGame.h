@@ -16,6 +16,9 @@ namespace CoopGame {
 Coop::Session& Session();
 std::mutex& Mutex();
 
+// Client: reload the scene at the host's spot next frame (same as the Teleport button).
+void RequestTeleportToHost();
+
 // What we read from our own Link this frame (updated in the frame hook).
 const Coop::PlayerState& LocalState();
 
