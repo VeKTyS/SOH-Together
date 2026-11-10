@@ -3,6 +3,7 @@
 // The messages players send each other once connected.
 // The first byte says what kind of message it is.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -11,9 +12,43 @@
 namespace Coop {
 
 enum class MessageType : uint8_t {
-    PlayerState = 1, // Snapshot channel, every game frame (20 Hz)
-    PlayerPose = 2,  // Snapshot channel, every game frame while in game
+    PlayerState = 1,         // Snapshot channel, every game frame (20 Hz)
+    PlayerPose = 2,          // Snapshot channel, every game frame while in game
+    FlagChange = 3,          // Ordered channel: someone set/unset a flag (chest opened, switch pressed...)
+    FlagSnapshotRequest = 4, // Ordered channel: client -> host, "send me all your flags"
+    FlagSnapshot = 5,        // Ordered channel: host -> client, all the flags at once
 };
+
+// One flag going up or down. sceneNum = -1 for the global ones (story events etc).
+// flagType uses SoH's FlagType enum, the game side checks it's one we sync.
+struct FlagChange {
+    int16_t sceneNum = -1;
+    uint8_t flagType = 0;
+    int16_t flag = 0;
+    bool set = true;
+    bool operator==(const FlagChange&) const = default;
+};
+
+// Every flag that makes up "where we are in the game", sent when a client
+// loads their save so they end up in the host's world. Arrays are sent with
+// their length: the game side refuses it if the lengths don't match its own.
+struct FlagSnapshot {
+    // per scene: chest, swch, clear, collect, unk, rooms, floors (SoH's SavedSceneFlags)
+    std::vector<std::array<uint32_t, 7>> scenes;
+    std::vector<uint16_t> eventChkInf;
+    std::vector<uint16_t> itemGetInf;
+    std::vector<uint16_t> infTable;
+    std::vector<uint16_t> randomizerInf;
+    bool operator==(const FlagSnapshot&) const = default;
+};
+
+std::vector<uint8_t> EncodeFlagChange(const FlagChange& change);
+std::optional<FlagChange> DecodeFlagChange(std::span<const uint8_t> bytes);
+
+std::vector<uint8_t> EncodeFlagSnapshotRequest();
+
+std::vector<uint8_t> EncodeFlagSnapshot(const FlagSnapshot& snapshot);
+std::optional<FlagSnapshot> DecodeFlagSnapshot(std::span<const uint8_t> bytes);
 
 // Where my Link is. Sent every frame, so if one gets lost on the way it's no
 // big deal, the next one is already coming.

@@ -78,8 +78,27 @@ class Session {
     }
     uint16_t Port() const; // listening port when hosting, 0 otherwise
 
+    // --- flags (chests, switches, story events...) ---
+    // How it works: when a client loads their save it asks the host for all of
+    // its flags (snapshot) and takes them. After that every single change is
+    // sent to everyone; the host forwards a client's change to the other clients.
+
+    // We changed a flag: tell everyone. Sent at the next Tick().
+    void SendFlagChange(const FlagChange& change);
+    // Client only: ask the host for its flags.
+    void RequestFlagSnapshot();
+    // Host only: answer someone's request.
+    void SendFlagSnapshot(PeerId peer, const FlagSnapshot& snapshot);
+
+    // What arrived since last time (each call empties the list).
+    std::vector<FlagChange> TakeFlagChanges();
+    std::optional<FlagSnapshot> TakeFlagSnapshot();
+    std::vector<PeerId> TakeSnapshotRequests();
+
   private:
     void HandleEvent(TransportEvent& ev);
+    void HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload);
+    void SendTo(PeerId peer, Channel channel, std::span<const uint8_t> bytes);
     RemotePlayer* Find(PeerId peer);
     void Log(const std::string& line) const;
 
@@ -89,6 +108,10 @@ class Session {
     std::vector<RemotePlayer> mPlayers;
     std::string mLastError;
     std::vector<TransportEvent> mEvents; // reused every frame to avoid allocations
+
+    std::vector<FlagChange> mFlagChangesIn;
+    std::optional<FlagSnapshot> mFlagSnapshotIn;
+    std::vector<PeerId> mSnapshotRequestsIn;
 };
 
 } // namespace Coop

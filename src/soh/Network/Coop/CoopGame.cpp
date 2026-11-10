@@ -149,6 +149,7 @@ void OnFrame() {
     bool hasPose = gLocalState.inGame && CoopGame::ReadLocalPose(pose);
     GetSession().Tick(gLocalState, hasPose ? &pose : nullptr);
     CoopGame::UpdatePuppets();
+    CoopGame::UpdateFlags();
 }
 
 void SaveCVars() {
@@ -288,6 +289,14 @@ void DrawClient(Coop::Session& session) {
         ImGui::TextDisabled("If this takes more than a few seconds, check the address and the host's firewall.");
     } else {
         ImGui::Text("Connected!");
+        if (gLocalState.inGame) {
+            // tells you if chests/doors/story are now the host's
+            if (CoopGame::FlagsSynced()) {
+                ImGui::TextDisabled("World synced with the host (chests, doors, story...)");
+            } else {
+                ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "Getting the host's world... (the host must be in game)");
+            }
+        }
         for (const Coop::RemotePlayer& p : session.Players()) {
             DrawPlayer(p);
         }
@@ -329,6 +338,7 @@ void RegisterCoopFrameHook() {
     SPDLOG_INFO("[Coop] build {}", SOHT_BUILD_ID);
     COND_HOOK(OnGameFrameUpdate, true, OnFrame);
     CoopGame::RegisterPuppetHooks();
+    CoopGame::RegisterFlagHooks();
 }
 
 } // namespace

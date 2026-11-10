@@ -156,4 +156,96 @@ std::optional<PlayerPose> DecodePlayerPose(std::span<const uint8_t> bytes) {
     return p;
 }
 
+std::vector<uint8_t> EncodeFlagChange(const FlagChange& c) {
+    ByteWriter w;
+    w.U8(static_cast<uint8_t>(MessageType::FlagChange));
+    w.U16(static_cast<uint16_t>(c.sceneNum));
+    w.U8(c.flagType);
+    w.U16(static_cast<uint16_t>(c.flag));
+    w.U8(c.set ? 1 : 0);
+    return w.Take();
+}
+
+std::optional<FlagChange> DecodeFlagChange(std::span<const uint8_t> bytes) {
+    ByteReader r(bytes);
+    FlagChange c;
+    uint8_t type = 0, set = 0;
+    uint16_t scene = 0, flag = 0;
+    if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::FlagChange) || !r.U16(scene) || !r.U8(c.flagType) ||
+        !r.U16(flag) || !r.U8(set) || set > 1 || r.Remaining() != 0) {
+        return std::nullopt;
+    }
+    c.sceneNum = static_cast<int16_t>(scene);
+    c.flag = static_cast<int16_t>(flag);
+    c.set = set == 1;
+    return c;
+}
+
+std::vector<uint8_t> EncodeFlagSnapshotRequest() {
+    return { static_cast<uint8_t>(MessageType::FlagSnapshotRequest) };
+}
+
+namespace {
+
+void WriteU16Array(ByteWriter& w, const std::vector<uint16_t>& values) {
+    w.U16(static_cast<uint16_t>(values.size()));
+    for (uint16_t v : values) {
+        w.U16(v);
+    }
+}
+
+bool ReadU16Array(ByteReader& r, std::vector<uint16_t>& out) {
+    uint16_t count = 0;
+    // each value is 2 bytes: refuse a count that can't fit in what's left
+    // (otherwise a tiny packet could make us reserve a huge vector)
+    if (!r.U16(count) || r.Remaining() < static_cast<size_t>(count) * 2) {
+        return false;
+    }
+    out.resize(count);
+    for (uint16_t& v : out) {
+        r.U16(v);
+    }
+    return true;
+}
+
+} // namespace
+
+std::vector<uint8_t> EncodeFlagSnapshot(const FlagSnapshot& s) {
+    ByteWriter w;
+    w.U8(static_cast<uint8_t>(MessageType::FlagSnapshot));
+    w.U16(static_cast<uint16_t>(s.scenes.size()));
+    for (const auto& scene : s.scenes) {
+        for (uint32_t v : scene) {
+            w.U32(v);
+        }
+    }
+    WriteU16Array(w, s.eventChkInf);
+    WriteU16Array(w, s.itemGetInf);
+    WriteU16Array(w, s.infTable);
+    WriteU16Array(w, s.randomizerInf);
+    return w.Take();
+}
+
+std::optional<FlagSnapshot> DecodeFlagSnapshot(std::span<const uint8_t> bytes) {
+    ByteReader r(bytes);
+    FlagSnapshot s;
+    uint8_t type = 0;
+    uint16_t sceneCount = 0;
+    if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::FlagSnapshot) || !r.U16(sceneCount) ||
+        r.Remaining() < static_cast<size_t>(sceneCount) * 7 * 4) {
+        return std::nullopt;
+    }
+    s.scenes.resize(sceneCount);
+    for (auto& scene : s.scenes) {
+        for (uint32_t& v : scene) {
+            r.U32(v);
+        }
+    }
+    if (!ReadU16Array(r, s.eventChkInf) || !ReadU16Array(r, s.itemGetInf) || !ReadU16Array(r, s.infTable) ||
+        !ReadU16Array(r, s.randomizerInf) || r.Remaining() != 0) {
+        return std::nullopt;
+    }
+    return s;
+}
+
 } // namespace Coop

@@ -169,3 +169,56 @@ TEST(Messages, PoseAndStateAreNotMixedUp) {
 TEST(Messages, PlayerPoseStaysSmall) {
     EXPECT_LE(EncodePlayerPose(MakePose()).size(), 200u);
 }
+
+TEST(Messages, FlagChangeRoundTrip) {
+    for (FlagChange c : { FlagChange{ -1, 5, 0x1A7, true }, FlagChange{ 0x55, 1, 0x3F, false } }) {
+        std::optional<FlagChange> out = DecodeFlagChange(EncodeFlagChange(c));
+        ASSERT_TRUE(out.has_value());
+        EXPECT_TRUE(*out == c);
+    }
+    std::vector<uint8_t> bad = EncodeFlagChange({});
+    bad.back() = 2; // "set" must be 0 or 1
+    EXPECT_FALSE(DecodeFlagChange(bad).has_value());
+}
+
+namespace {
+FlagSnapshot MakeSnapshot() {
+    FlagSnapshot s;
+    s.scenes.resize(124);
+    for (size_t i = 0; i < s.scenes.size(); i++) {
+        s.scenes[i] = { static_cast<uint32_t>(i), 0xFFFFFFFF, 0, 0x80000000, 7, 8, static_cast<uint32_t>(i * 3) };
+    }
+    s.eventChkInf = std::vector<uint16_t>(14, 0xABCD);
+    s.itemGetInf = { 1, 2, 3, 4 };
+    s.infTable = std::vector<uint16_t>(30, 0x0F0F);
+    s.randomizerInf = std::vector<uint16_t>(150, 0x1234);
+    return s;
+}
+} // namespace
+
+TEST(Messages, FlagSnapshotRoundTripAndSize) {
+    FlagSnapshot in = MakeSnapshot();
+    std::vector<uint8_t> bytes = EncodeFlagSnapshot(in);
+    std::optional<FlagSnapshot> out = DecodeFlagSnapshot(bytes);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+    EXPECT_LT(bytes.size(), 8000u); // a few KB, once per save load: fine
+}
+
+TEST(Messages, FlagSnapshotEveryTruncationIsRejected) {
+    std::vector<uint8_t> full = EncodeFlagSnapshot(MakeSnapshot());
+    for (size_t len = 0; len < full.size(); len += 7) { // every 7th cut, it's a big message
+        EXPECT_FALSE(DecodeFlagSnapshot(std::span<const uint8_t>(full.data(), len)).has_value()) << len;
+    }
+}
+
+// A 5-byte packet claiming 65535 scenes must not make us allocate megabytes.
+TEST(Messages, FlagSnapshotWithLyingCountsIsRejected) {
+    std::vector<uint8_t> liar = { static_cast<uint8_t>(MessageType::FlagSnapshot), 0xFF, 0xFF, 0, 0 };
+    EXPECT_FALSE(DecodeFlagSnapshot(liar).has_value());
+
+    FlagSnapshot s;
+    std::vector<uint8_t> bytes = EncodeFlagSnapshot(s); // 0 scenes, then 4 empty arrays
+    bytes[3] = 0xFF;                                    // eventChkInf count = 255, no data behind
+    EXPECT_FALSE(DecodeFlagSnapshot(bytes).has_value());
+}

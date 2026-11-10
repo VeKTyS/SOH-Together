@@ -28,4 +28,12 @@ void UpdatePuppets();
 // Hooks the puppets need, called once at startup (safe to call again).
 void RegisterPuppetHooks();
 
+// --- flags (CoopFlags.cpp) ---
+
+// Call every frame with the session locked, after Session().Tick().
+void UpdateFlags();
+// Client: true once we got the host's flags for the save we're playing.
+bool FlagsSynced();
+void RegisterFlagHooks();
+
 } // namespace CoopGame
