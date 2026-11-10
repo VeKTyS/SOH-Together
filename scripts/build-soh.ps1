@@ -1,9 +1,11 @@
 # Builds SoH with our co-op code in it.
 #   powershell -ExecutionPolicy Bypass -File scripts\build-soh.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\build-soh.ps1 -Config RelWithDebInfo
+#   powershell -ExecutionPolicy Bypass -File scripts\build-soh.ps1 -Full   # also redo SoH's asset copy
 # First run takes a long time (vcpkg + all of SoH). After that, only what changed.
 param(
-    [ValidateSet("Debug", "RelWithDebInfo", "Release")][string]$Config = "Debug"
+    [ValidateSet("Debug", "RelWithDebInfo", "Release")][string]$Config = "Debug",
+    [switch]$Full
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -27,6 +29,15 @@ if (-not (Test-Path (Join-Path $build "soh\soh.o2r"))) {
     if ($LASTEXITCODE) { throw "soh.o2r generation failed" }
 }
 
-& $cmake --build $build --config $Config --target soh --parallel
+# After each link, SoH copies its 20 000 asset yml files twice (6+ min with the
+# antivirus). They never change since SoH is pinned, so skip that once they're there.
+$msbuildArgs = @()
+$assetCopies = @((Join-Path $build "soh\assets"), (Join-Path $root "external\Shipwright\x64\$Config\assets"))
+if (-not $Full -and -not ($assetCopies | Where-Object { -not (Test-Path $_) })) {
+    Write-Host "Skipping SoH's asset copy (already done, use -Full to force it)"
+    $msbuildArgs = @("--", "/p:PostBuildEventUseInBuild=false")
+}
+
+& $cmake --build $build --config $Config --target soh --parallel @msbuildArgs
 if ($LASTEXITCODE) { throw "Build failed" }
 Write-Host "Done: external\Shipwright\x64\$Config\soh.exe"
