@@ -1,0 +1,4 @@
+# SoH requires LF line endings in its C/C++ sources (see external/Shipwright/.editorconfig).
+src/** text eol=lf
+tests/** text eol=lf
+CMakeLists.txt text eol=lf
