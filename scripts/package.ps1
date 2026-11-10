@@ -17,6 +17,10 @@ if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force $out | Out-Null
 
 Copy-Item $exe, $sohArchive $out
+# SoH needs these yml files to turn the friend's ROM into oot.o2r on first launch
+$assets = Join-Path (Split-Path $exe) "assets"
+if (-not (Test-Path $assets)) { throw "Missing $assets (the build copies it at the end, let it finish)" }
+Copy-Item -Recurse $assets (Join-Path $out "assets")
 # SoH's CMake downloads this one at configure time (gamepad mappings)
 $controllerDb = Join-Path $root "build\soh\gamecontrollerdb.txt"
 if (Test-Path $controllerDb) { Copy-Item $controllerDb $out }
