@@ -3,14 +3,17 @@
 # soh.o2r already there are used as they are (SoH only checks soh.o2r's version
 # number, and ours is the same 9.3.1).
 #   powershell -ExecutionPolicy Bypass -File scripts\package.ps1
+# Release by default (SoH only has Debug and Release). Debug stops on asserts
+# that a normal SoH skips (a texture pack missing a piece of a model crashes it),
+# and it's way slower.
 # Never put oot.o2r / the ROM in there: that's Nintendo's stuff, everyone uses their own.
 param(
-    [ValidateSet("Debug", "RelWithDebInfo", "Release")][string]$Config = "Debug"
+    [ValidateSet("Debug", "Release")][string]$Config = "Release"
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root "external\Shipwright\x64\$Config\soh.exe"
-if (-not (Test-Path $exe)) { throw "Missing $exe, build first (scripts\build-soh.ps1)" }
+if (-not (Test-Path $exe)) { throw "Missing $exe, build first (scripts\build-soh.ps1 -Config $Config)" }
 
 $id = (git -C $root rev-parse --short=12 HEAD).Trim()
 $name = "SOH-Together-$id-$Config"
