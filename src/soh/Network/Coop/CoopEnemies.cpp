@@ -84,6 +84,10 @@ std::unordered_map<Actor*, EnemyInfo> sEnemies;
 // Kept here until OnActorInit says which actor owns them.
 std::vector<SkelAnime*> sPendingSkels;
 
+// copying the enemy's own memory, further down
+void ReadBody(Actor* actor, const EnemyInfo& info, Coop::EnemyState& e);
+void WriteBody(Actor* actor, const EnemyInfo& info, const Coop::EnemyState& e);
+
 // --- the network picture, refreshed once per frame (game thread only) ---
 
 bool sHostStreaming = false; // host, and a client is in our scene
@@ -427,6 +431,7 @@ void SendHostStates() {
                 e.joints[i] = ToNet(info.skel->jointTable[i]);
             }
         }
+        ReadBody(a, info, e);
         out.enemies.push_back(std::move(e));
     }
     CoopGame::Session().SendEnemyStates(out);
@@ -436,6 +441,7 @@ void SendHostStates() {
 
 // Freeze our copy and make it look like the host's.
 void ApplyHostState(Actor* actor, EnemyInfo& info, const Coop::EnemyState& s) {
+    WriteBody(actor, info, s);
     actor->world.pos = { s.pos.x, s.pos.y, s.pos.z };
     actor->focus.pos = { s.focus.x, s.focus.y, s.focus.z };
     actor->scale = { s.scale.x, s.scale.y, s.scale.z };
@@ -523,34 +529,251 @@ void ForwardLocalHits(Actor* actor, EnemyInfo& info) {
 
 // --- host: enemies go after the nearest player, not only the host ---
 
-// The game measures every enemy's distance to OUR Link right before its update.
-// Point those numbers at the closest player instead (ours or a teammate's).
-// Enemies that look at the player directly still only see the host, but most
-// aggro / facing checks use these fields.
-void AimAtNearestPlayer(Actor* actor) {
-    std::vector<Actor*> puppets = CoopGame::VisiblePuppets();
-    if (puppets.empty()) {
+// Enemies only know about OUR Link: they read its position directly (GET_PLAYER)
+// to chase, aim, dive... So right before an enemy's update, if a teammate is
+// closer to it, we move our Link to the teammate's spot, and put it back right
+// after the update. Nothing is drawn in between, our Link doesn't really move.
+struct PlayerSwap {
+    bool active = false;
+    Player* player = nullptr;
+    PosRot world;
+    Vec3f focus;
+    Vec3s shapeRot;
+};
+PlayerSwap sSwap;
+
+void EndAggroSwap() {
+    if (!sSwap.active) {
         return;
     }
-    Actor* best = &GET_PLAYER(gPlayState)->actor;
-    float bestXZ = actor->xzDistToPlayer;
-    float bestY = actor->yDistToPlayer;
-    float bestSq = actor->xyzDistToPlayerSq;
+    sSwap.player->actor.world = sSwap.world;
+    sSwap.player->actor.focus.pos = sSwap.focus;
+    sSwap.player->actor.shape.rot = sSwap.shapeRot;
+    sSwap.active = false;
+}
+
+void BeginAggroSwap(Actor* enemy) {
+    std::vector<Actor*> puppets = CoopGame::VisiblePuppets();
+    Player* player = GET_PLAYER(gPlayState);
+    if (puppets.empty() || player == nullptr) {
+        return;
+    }
+    Actor* best = nullptr;
+    float bestSq = enemy->xyzDistToPlayerSq; // distance to our Link, computed by the game
     for (Actor* p : puppets) {
-        float xz = Actor_WorldDistXZToActor(actor, p);
-        float y = Actor_HeightDiff(actor, p);
+        float xz = Actor_WorldDistXZToActor(enemy, p);
+        float y = Actor_HeightDiff(enemy, p);
         float sq = SQ(xz) + SQ(y);
         if (sq < bestSq) {
             best = p;
-            bestXZ = xz;
-            bestY = y;
             bestSq = sq;
         }
     }
-    actor->xzDistToPlayer = bestXZ;
-    actor->yDistToPlayer = bestY;
-    actor->xyzDistToPlayerSq = bestSq;
-    actor->yawTowardsPlayer = Actor_WorldYawTowardActor(actor, best);
+    if (best == nullptr) {
+        return; // we're the closest, nothing to do
+    }
+    sSwap.active = true;
+    sSwap.player = player;
+    sSwap.world = player->actor.world;
+    sSwap.focus = player->actor.focus.pos;
+    sSwap.shapeRot = player->actor.shape.rot;
+
+    player->actor.world = best->world;
+    player->actor.shape.rot = best->shape.rot;
+    player->actor.focus.pos = best->world.pos;
+    player->actor.focus.pos.y +=
+        (best->focus.pos.y > best->world.pos.y) ? best->focus.pos.y - best->world.pos.y : 50.0f; // about head height
+    // the numbers the game measured before calling us, redone against the teammate
+    enemy->xzDistToPlayer = Actor_WorldDistXZToActor(enemy, best);
+    enemy->yDistToPlayer = Actor_HeightDiff(enemy, best);
+    enemy->xyzDistToPlayerSq = SQ(enemy->xzDistToPlayer) + SQ(enemy->yDistToPlayer);
+    enemy->yawTowardsPlayer = Actor_WorldYawTowardActor(enemy, best);
+}
+
+// --- copying the rest of an enemy's memory ---
+//
+// Every enemy type has its own fields after the common Actor part (timers,
+// "on fire", current action...). Writing code for each of the ~100 enemies
+// would take forever, so we copy that memory as is: both games are the same
+// build, the layout is the same. What we must NOT copy as is:
+// - pointers to other things in memory (other actors, buffers): addresses are
+//   different in each game, so those slots are skipped
+// - pointers into the exe (current action function, static tables): sent as an
+//   offset from the start of the exe and rebuilt on the other side
+// - colliders and the skeleton struct: handled on their own above
+
+enum SlotKind : uint8_t { kSlotRaw = 0, kSlotSkip = 1, kSlotExe = 2 };
+
+// Upper 32 bits of heap addresses we've seen this frame. Heap pointers in an
+// enemy point near other actors, so a value with the same upper bits is
+// treated as a pointer. Ints and floats almost never look like that.
+std::vector<uint32_t> sHeapHighs;
+
+void RefreshHeapHighs() {
+    sHeapHighs.clear();
+    auto add = [](uintptr_t addr) {
+        uint32_t hi = static_cast<uint32_t>(static_cast<uint64_t>(addr) >> 32);
+        if (std::find(sHeapHighs.begin(), sHeapHighs.end(), hi) == sHeapHighs.end()) {
+            sHeapHighs.push_back(hi);
+        }
+    };
+    for (int cat = 0; cat < ACTORCAT_MAX; cat++) {
+        for (Actor* a = gPlayState->actorCtx.actorLists[cat].head; a != nullptr; a = a->next) {
+            add(reinterpret_cast<uintptr_t>(a));
+        }
+    }
+    static std::vector<uint8_t> probe(64); // a fresh heap block, for the CRT heap
+    add(reinterpret_cast<uintptr_t>(probe.data()));
+    add(reinterpret_cast<uintptr_t>(gPlayState));
+}
+
+SlotKind Classify(uint64_t v) {
+    if (v == 0) {
+        return kSlotRaw;
+    }
+    uintptr_t exeStart = 0, exeEnd = 0;
+    if (CoopGame::ExeRange(exeStart, exeEnd) && v >= exeStart && v < exeEnd) {
+        return kSlotExe;
+    }
+    uint32_t hi = static_cast<uint32_t>(v >> 32);
+    if (hi == 0) {
+        return kSlotRaw;
+    }
+    for (uint32_t h : sHeapHighs) {
+        if (hi + 1 >= h && hi <= h + 1) {
+            return kSlotSkip;
+        }
+    }
+    return kSlotRaw;
+}
+
+// Byte ranges inside the actor we never copy raw (relative to the actor start).
+std::vector<std::pair<size_t, size_t>> OwnRanges(Actor* actor, const EnemyInfo& info, size_t size) {
+    std::vector<std::pair<size_t, size_t>> out;
+    uintptr_t base = reinterpret_cast<uintptr_t>(actor);
+    auto add = [&](const void* p, size_t len) {
+        uintptr_t a = reinterpret_cast<uintptr_t>(p);
+        if (a >= base && a < base + size) {
+            out.emplace_back(a - base, std::min(a - base + len, size));
+        }
+    };
+    if (info.skel != nullptr) {
+        add(info.skel, sizeof(SkelAnime));
+    }
+    for (Collider* col : info.colliders) {
+        switch (col->shape) {
+            case COLSHAPE_CYLINDER:
+                add(col, sizeof(ColliderCylinder));
+                break;
+            case COLSHAPE_QUAD:
+                add(col, sizeof(ColliderQuad));
+                break;
+            case COLSHAPE_JNTSPH: {
+                ColliderJntSph* c = (ColliderJntSph*)col;
+                add(col, sizeof(ColliderJntSph));
+                add(c->elements, sizeof(ColliderJntSphElement) * std::max(c->count, 0));
+                break;
+            }
+            case COLSHAPE_TRIS: {
+                ColliderTris* c = (ColliderTris*)col;
+                add(col, sizeof(ColliderTris));
+                add(c->elements, sizeof(ColliderTrisElement) * std::max(c->count, 0));
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return out;
+}
+
+bool InRanges(const std::vector<std::pair<size_t, size_t>>& ranges, size_t from, size_t to) {
+    for (const auto& r : ranges) {
+        if (from < r.second && to > r.first) {
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t InstanceSize(Actor* actor) {
+    return ActorDB::Instance->RetrieveEntry(actor->id).entry.instanceSize;
+}
+
+// host side: the enemy's own memory, ready to send
+void ReadBody(Actor* actor, const EnemyInfo& info, Coop::EnemyState& e) {
+    size_t size = InstanceSize(actor);
+    if (sizeof(Actor) % 8 != 0 || size <= sizeof(Actor) || size - sizeof(Actor) > Coop::kMaxEnemyBody) {
+        return;
+    }
+    auto ranges = OwnRanges(actor, info, size);
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(actor);
+    uintptr_t exeStart = 0, exeEnd = 0;
+    CoopGame::ExeRange(exeStart, exeEnd);
+    e.body.assign(bytes + sizeof(Actor), bytes + size);
+    e.slotKinds.assign((e.body.size() + 7) / 8, kSlotRaw);
+    for (size_t slot = 0; slot < e.slotKinds.size(); slot++) {
+        size_t off = sizeof(Actor) + slot * 8;
+        if (InRanges(ranges, off, std::min(off + 8, size))) {
+            e.slotKinds[slot] = kSlotSkip;
+            continue;
+        }
+        if (off + 8 > size) {
+            continue; // last few bytes, too short to be a pointer
+        }
+        uint64_t v;
+        memcpy(&v, bytes + off, 8);
+        SlotKind kind = Classify(v);
+        e.slotKinds[slot] = kind;
+        if (kind == kSlotExe) {
+            uint64_t offset = v - exeStart;
+            memcpy(&e.body[slot * 8], &offset, 8);
+        }
+    }
+}
+
+// client side: write the host's values into our copy
+void WriteBody(Actor* actor, const EnemyInfo& info, const Coop::EnemyState& e) {
+    size_t size = InstanceSize(actor);
+    if (e.body.empty() || sizeof(Actor) + e.body.size() != size || e.slotKinds.size() != (e.body.size() + 7) / 8) {
+        return; // not the same actor layout: leave it alone
+    }
+    auto ranges = OwnRanges(actor, info, size);
+    uint8_t* bytes = reinterpret_cast<uint8_t*>(actor);
+    uintptr_t exeStart = 0, exeEnd = 0;
+    bool haveExe = CoopGame::ExeRange(exeStart, exeEnd);
+    for (size_t slot = 0; slot < e.slotKinds.size(); slot++) {
+        size_t off = sizeof(Actor) + slot * 8;
+        size_t len = std::min<size_t>(8, size - off);
+        if (e.slotKinds[slot] == kSlotSkip || InRanges(ranges, off, off + len)) {
+            continue;
+        }
+        if (len == 8) {
+            uint64_t mine;
+            memcpy(&mine, bytes + off, 8);
+            if (Classify(mine) == kSlotSkip) {
+                continue; // we hold a pointer here: keep ours
+            }
+            if (e.slotKinds[slot] == kSlotExe) {
+                uint64_t offset;
+                memcpy(&offset, &e.body[slot * 8], 8);
+                if (!haveExe || offset >= exeEnd - exeStart) {
+                    continue;
+                }
+                uint64_t v = exeStart + offset;
+                memcpy(bytes + off, &v, 8);
+                continue;
+            }
+            if (Classify(mine) == kSlotExe) {
+                uint64_t theirs;
+                memcpy(&theirs, &e.body[slot * 8], 8);
+                if (theirs != 0) {
+                    continue; // our function pointer vs their plain number: don't break ours
+                }
+            }
+        }
+        memcpy(bytes + off, &e.body[slot * 8], len);
+    }
 }
 
 // --- shared health (bosses, or enemies nobody is copying) ---
@@ -577,6 +800,7 @@ void SendHealthDrop(Actor* actor, uint8_t damage) {
 
 // After the enemy's update: did it lose health because of us? Tell the others.
 void OnActorUpdate(void* ptr) {
+    EndAggroSwap();
     Actor* actor = static_cast<Actor*>(ptr);
     auto it = sEnemies.find(actor);
     if (it == sEnemies.end() || gPlayState == nullptr || GetActorListIndex(actor) < 0) {
@@ -610,6 +834,7 @@ void OnActorUpdate(void* ptr) {
 // --- the per-actor hook: runs right before each actor's update ---
 
 void OnShouldActorUpdate(void* ptr, bool* should) {
+    EndAggroSwap(); // in case the previous enemy's update got skipped by someone else
     Actor* actor = static_cast<Actor*>(ptr);
     if (!*should || gPlayState == nullptr || !IsSyncedCategory(actor)) {
         return;
@@ -632,7 +857,7 @@ void OnShouldActorUpdate(void* ptr, bool* should) {
     info.pendingHits.clear();
 
     if (sHostStreaming && actor->category == ACTORCAT_ENEMY) {
-        AimAtNearestPlayer(actor);
+        BeginAggroSwap(actor); // undone in OnActorUpdate, right after its update
         return;
     }
 
@@ -725,6 +950,10 @@ void OnActorDestroy(void* actorPtr) {
 namespace CoopGame {
 
 void UpdateEnemies() {
+    EndAggroSwap();
+    if (gPlayState != nullptr) {
+        RefreshHeapHighs();
+    }
     Coop::Session& session = Session();
     std::vector<Coop::EnemyKill> kills = session.TakeEnemyKills();
     std::vector<Coop::EnemyHit> hits = session.TakeEnemyHits();

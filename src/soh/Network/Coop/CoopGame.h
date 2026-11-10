@@ -60,6 +60,9 @@ void RegisterItemHooks();
 std::vector<uint8_t> BuildSaveBlob();
 bool ApplySaveBlob(const std::vector<uint8_t>& blob);
 
+// Where soh.exe is loaded (CoopModule.cpp). False if unknown on this platform.
+bool ExeRange(uintptr_t& start, uintptr_t& end);
+
 // --- world (CoopWorld.cpp): loaded things react to teammates' flags right away ---
 void RegisterWorldHooks();
 

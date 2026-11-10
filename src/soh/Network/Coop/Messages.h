@@ -78,6 +78,7 @@ struct Vec3f32 {
 inline constexpr size_t kMaxEnemiesPerPacket = 64;
 inline constexpr size_t kMaxEnemyJoints = 128; // biggest boss skeleton is under 90
 inline constexpr size_t kMaxEnemyQuads = 8;
+inline constexpr size_t kMaxEnemyBody = 8192; // biggest enemy struct is a few KB
 
 // One enemy as the host sees it. The client freezes its own copy and makes it
 // look exactly like this.
@@ -96,6 +97,11 @@ struct EnemyState {
     // guess them: 4 corners per quad, in the enemy's collider order
     std::vector<Vec3f32> quadCorners;
     std::vector<Vec3i16> joints; // skeleton pose, empty if the enemy has no skeleton
+    // The rest of the enemy's memory (its own fields after the common Actor
+    // part: timers, state, "on fire"...), one kind byte per 8-byte slot saying
+    // how to copy it (raw / skip / pointer into the exe). See CoopEnemies.cpp.
+    std::vector<uint8_t> body;
+    std::vector<uint8_t> slotKinds; // size = (body.size() + 7) / 8
     bool operator==(const EnemyState&) const = default;
 };
 

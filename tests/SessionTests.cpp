@@ -434,3 +434,30 @@ TEST(SessionItems, ItemsAndDungeonKeysAreRelayedToEveryoneElse) {
     }));
     EXPECT_EQ(aliceItems, 0u); // not echoed back
 }
+
+// a real room: a dozen enemies with skeletons is several KB, more than one UDP
+// packet. It has to arrive anyway (ENet splits it).
+TEST(SessionEnemies, BigEnemyPacketArrives) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Guest")));
+    ASSERT_TRUE(
+        TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Connected; }));
+    EnemyStates states;
+    states.enemies.resize(20);
+    for (auto& e : states.enemies) {
+        e.joints.resize(40);
+        e.quadCorners.resize(8);
+    }
+    std::optional<EnemyStates> got;
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0),
+                          [&] {
+                              host.SendEnemyStates(states);
+                              if (auto s = client.TakeEnemyStates()) {
+                                  got = s;
+                              }
+                              return got.has_value();
+                          }))
+        << "size " << EncodeEnemyStates(states).size();
+    EXPECT_EQ(got->enemies.size(), 20u);
+}

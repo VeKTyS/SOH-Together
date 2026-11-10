@@ -329,6 +329,20 @@ bool ReadEnemyState(ByteReader& r, EnemyState& e) {
     for (Vec3i16& j : e.joints) {
         ReadVec(r, j);
     }
+    uint16_t bodySize = 0;
+    size_t slots = 0;
+    if (!r.U16(bodySize) || bodySize > kMaxEnemyBody ||
+        r.Remaining() < static_cast<size_t>(bodySize) + (slots = (bodySize + 7u) / 8u)) {
+        return false;
+    }
+    e.body.resize(bodySize);
+    for (uint8_t& b : e.body) {
+        r.U8(b);
+    }
+    e.slotKinds.resize(slots);
+    for (uint8_t& k : e.slotKinds) {
+        r.U8(k);
+    }
     return true;
 }
 
@@ -362,6 +376,16 @@ std::vector<uint8_t> EncodeEnemyStates(const EnemyStates& s) {
         w.U8(static_cast<uint8_t>(joints));
         for (size_t j = 0; j < joints; j++) {
             WriteVec(w, e.joints[j]);
+        }
+        bool bodyOk = e.body.size() <= kMaxEnemyBody && e.slotKinds.size() == (e.body.size() + 7) / 8;
+        w.U16(static_cast<uint16_t>(bodyOk ? e.body.size() : 0));
+        if (bodyOk) {
+            for (uint8_t b : e.body) {
+                w.U8(b);
+            }
+            for (uint8_t k : e.slotKinds) {
+                w.U8(k);
+            }
         }
     }
     return w.Take();

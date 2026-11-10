@@ -278,7 +278,11 @@ EnemyStates MakeEnemyStates() {
     for (int i = 0; i < 21; i++) {
         a.joints.push_back({ int16_t(i), int16_t(-i * 100), int16_t(i * 300) });
     }
-    EnemyState b; // no skeleton, no quads
+    for (int i = 0; i < 20; i++) {
+        a.body.push_back(static_cast<uint8_t>(i * 13));
+    }
+    a.slotKinds = { 0, 1, 2 }; // 20 bytes = 3 slots
+    EnemyState b;              // no skeleton, no quads
     b.room = -1;
     b.listIndex = 0;
     b.actorId = 0x0013;
@@ -318,10 +322,18 @@ TEST(Messages, EnemyStatesWithLyingCountsIsRejected) {
     EnemyStates one;
     one.enemies.resize(1);
     std::vector<uint8_t> bytes = EncodeEnemyStates(one);
-    bytes.back() = 120; // joint count says 120, nothing behind it
+    // the entry ends with: quad count (1 byte), joint count (1), body size (2), all 0 here
+    size_t n = bytes.size();
+    bytes[n - 3] = 120; // joint count says 120, nothing behind it
     EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
-    bytes.back() = 0;
-    bytes[bytes.size() - 2] = 9; // 9 quads, over the limit
+    bytes[n - 3] = 0;
+    bytes[n - 4] = 9; // 9 quads, over the limit
+    EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
+    bytes[n - 4] = 0;
+    bytes[n - 1] = 0x30; // body of 12 KB, over the limit
+    EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
+    bytes[n - 1] = 0;
+    bytes[n - 2] = 40; // 40 body bytes announced, none there
     EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
 }
 
@@ -330,6 +342,8 @@ TEST(Messages, EnemyStatesStaysUnderOnePacketForARoom) {
     EnemyStates s = MakeEnemyStates();
     s.enemies.resize(1);
     s.enemies[0].quadCorners.clear();
+    s.enemies[0].body.clear(); // the copied memory is extra, this checks the rest
+    s.enemies[0].slotKinds.clear();
     s.enemies.resize(10, s.enemies[0]);
     EXPECT_LT(EncodeEnemyStates(s).size(), 2000u);
 }
