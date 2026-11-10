@@ -11,7 +11,6 @@
 // Left out on purpose:
 // - EnItem00: Anchor removes any floor item whose flag is set, that would also
 //   eat your own pot/enemy loot (loot is per player here, see CoopFlags.cpp)
-// - gold skulltulas: their tokens aren't synced yet
 
 #include "soh/Network/Coop/CoopGame.h"
 
@@ -38,6 +37,8 @@ extern "C" {
 #include "src/overlays/actors/ovl_Bg_Ydan_Sp/z_bg_ydan_sp.h"
 #include "src/overlays/actors/ovl_Door_Shutter/z_door_shutter.h"
 #include "src/overlays/actors/ovl_En_Door/z_en_door.h"
+#include "src/overlays/actors/ovl_En_Si/z_en_si.h"
+#include "src/overlays/actors/ovl_En_Sw/z_en_sw.h"
 #include "src/overlays/actors/ovl_Item_B_Heart/z_item_b_heart.h"
 #include "src/overlays/actors/ovl_Obj_Bombiwa/z_obj_bombiwa.h"
 #include "src/overlays/actors/ovl_Obj_Hamishi/z_obj_hamishi.h"
@@ -204,6 +205,24 @@ void RegisterWorldHooks() {
         EnDoor* a = static_cast<EnDoor*>(ref);
         if (Active() && a->actionFunc == EnDoor_Idle && Switch(a->actor.params & 0x3F)) {
             DECR(a->lockTimer);
+        }
+    });
+
+    // gold skulltula / its token, when a teammate already got that token
+    // (gsFlags come from CoopFlags.cpp's GsFlags event). Anchor HookHandlers.cpp
+    COND_ID_HOOK(ShouldActorUpdate, ACTOR_EN_SI, true, [](void* ref, bool* should) {
+        EnSi* a = static_cast<EnSi*>(ref);
+        if (Active() && GET_GS_FLAGS((a->actor.params & 0x1F00) >> 8) & (a->actor.params & 0xFF)) {
+            Actor_Kill(&a->actor);
+            *should = false;
+        }
+    });
+
+    COND_ID_HOOK(ShouldActorUpdate, ACTOR_EN_SW, true, [](void* ref, bool* should) {
+        EnSw* a = static_cast<EnSw*>(ref);
+        if (Active() && GET_GS_FLAGS((a->actor.params & 0x1F00) >> 8) & (a->actor.params & 0xFF)) {
+            Actor_Kill(&a->actor);
+            *should = false;
         }
     });
 

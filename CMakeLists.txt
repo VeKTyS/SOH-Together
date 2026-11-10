@@ -57,6 +57,7 @@ if(SOHT_BUILD_TESTS)
         tests/MessagesTests.cpp
         tests/SessionTests.cpp
         tests/TransportTests.cpp
+        tests/LobbyTests.cpp
     )
     target_link_libraries(coop_tests PRIVATE coop_core gtest_main)
     if(MSVC)

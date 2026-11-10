@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <functional>
+#include <memory>
+#include <string>
 #include <thread>
 
 using namespace Coop;
@@ -433,4 +435,168 @@ TEST(SessionItems, ItemsAndDungeonKeysAreRelayedToEveryoneElse) {
         return hostItems == 1 && bobItems == 1 && bobKeys == 1;
     }));
     EXPECT_EQ(aliceItems, 0u); // not echoed back
+}
+
+// a real room: a dozen enemies with skeletons is several KB, more than one UDP
+// packet. It has to arrive anyway (ENet splits it).
+TEST(SessionEnemies, BigEnemyPacketArrives) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Guest")));
+    ASSERT_TRUE(
+        TickUntil(host, StateAt(0), client, StateAt(0), [&] { return client.Role() == SessionRole::Connected; }));
+    EnemyStates states;
+    states.enemies.resize(20);
+    for (auto& e : states.enemies) {
+        e.joints.resize(40);
+        e.quadCorners.resize(8);
+    }
+    std::optional<EnemyStates> got;
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, StateAt(0),
+                          [&] {
+                              host.SendEnemyStates(states);
+                              if (auto s = client.TakeEnemyStates()) {
+                                  got = s;
+                              }
+                              return got.has_value();
+                          }))
+        << "size " << EncodeEnemyStates(states).size();
+    EXPECT_EQ(got->enemies.size(), 20u);
+}
+
+TEST(SessionThings, ClientThingsReachTheOtherClientLatestOnly) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        return host.Players().size() == 2 && alice.Role() == SessionRole::Connected &&
+               bob.Role() == SessionRole::Connected;
+    }));
+    ThingStates mine;
+    mine.owner = 42;
+    mine.things.resize(1);
+    std::vector<ThingStates> atBob, atHost;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        alice.SendThingStates(mine); // every frame, like the game
+        for (auto& t : bob.TakeThingStates())
+            atBob.push_back(t);
+        for (auto& t : host.TakeThingStates())
+            atHost.push_back(t);
+        return !atBob.empty() && !atHost.empty();
+    }));
+    EXPECT_EQ(atBob.back().owner, 42u);
+    EXPECT_EQ(atHost.back().things.size(), 1u);
+}
+
+TEST(SessionRelay, ClientsGetIdsAndSeeEachOther) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    // alice sees host + bob, bob sees host + alice, all with a state
+    auto seesAll = [](const Session& s) {
+        return s.Players().size() == 2 && s.Players()[0].state && s.Players()[1].state;
+    };
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return seesAll(alice) && seesAll(bob); }));
+    EXPECT_EQ(host.SelfId(), kHostPlayerId);
+    EXPECT_NE(alice.SelfId(), 0u);
+    EXPECT_NE(alice.SelfId(), bob.SelfId());
+    // the host stays first (snapshot requests go to Players()[0])
+    EXPECT_EQ(alice.Players()[0].id, kHostPlayerId);
+    EXPECT_FALSE(alice.Players()[0].relayed);
+    EXPECT_TRUE(alice.Players()[1].relayed);
+    EXPECT_EQ(alice.Players()[1].name, "Bob");
+    EXPECT_EQ(alice.Players()[1].id, bob.SelfId());
+
+    // bob leaves: alice forgets him
+    bob.Stop();
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.Players().size() == 1; }));
+    EXPECT_EQ(alice.Players()[0].id, kHostPlayerId);
+}
+
+TEST(SessionRelay, EventsReachEveryoneWithTheRealSender) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.SelfId() != 0 && bob.SelfId() != 0; }));
+
+    alice.SendEvent(EventKind::PlayerSfx, { 0x12, 0x34 });
+    std::vector<Event> atHost, atBob, atAlice;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        for (auto& e : host.TakeEvents())
+            atHost.push_back(e);
+        for (auto& e : bob.TakeEvents())
+            atBob.push_back(e);
+        for (auto& e : alice.TakeEvents())
+            atAlice.push_back(e);
+        return !atHost.empty() && !atBob.empty();
+    }));
+    EXPECT_EQ(atHost[0].origin, alice.SelfId());
+    EXPECT_EQ(atBob[0].origin, alice.SelfId());
+    EXPECT_EQ(atBob[0].kind, EventKind::PlayerSfx);
+    EXPECT_EQ(atBob[0].data, (std::vector<uint8_t>{ 0x12, 0x34 }));
+    EXPECT_TRUE(atAlice.empty()); // not echoed back
+
+    host.SendEvent(EventKind::RoomState, { 1 });
+    std::vector<Event> fromHost;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        for (auto& e : alice.TakeEvents())
+            fromHost.push_back(e);
+        return !fromHost.empty();
+    }));
+    EXPECT_EQ(fromHost[0].origin, kHostPlayerId);
+}
+
+// voice goes on the lane that can drop packets, the host must relay it too
+TEST(SessionRelay, FastLaneEventsAreRelayedToo) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.SelfId() != 0 && bob.SelfId() != 0; }));
+
+    std::vector<Event> atBob;
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] {
+        alice.SendEvent(EventKind::Voice, { 7, 7, 7 }, Channel::Snapshot); // can be lost, so keep sending
+        for (auto& e : bob.TakeEvents())
+            atBob.push_back(e);
+        return !atBob.empty();
+    }));
+    EXPECT_EQ(atBob[0].kind, EventKind::Voice);
+    EXPECT_EQ(atBob[0].origin, alice.SelfId());
+}
+
+// Crests of Courage takes 2 to 16 players, we used to stop at 5
+TEST(SessionRelay, SixteenPlayersFit) {
+    Session host;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    std::vector<std::unique_ptr<Session>> clients;
+    for (int i = 0; i < 15; i++) {
+        clients.push_back(std::make_unique<Session>());
+        std::string name = "P" + std::to_string(i);
+        ASSERT_TRUE(clients.back()->Join("127.0.0.1", host.Port(), MakeHello(name.c_str())));
+    }
+    auto end = std::chrono::steady_clock::now() + 5s;
+    PlayerState s = StateAt(0);
+    while (std::chrono::steady_clock::now() < end && host.Players().size() < 15) {
+        host.Tick(s);
+        for (auto& c : clients)
+            c->Tick(s);
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(host.Players().size(), 15u);
+}
+
+// the host is gone: the other clients' puppets (relayed players) must go with it
+TEST(SessionRelay, LosingTheHostForgetsEveryone) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.Players().size() == 2; }));
+    host.Stop();
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.Role() == SessionRole::Off; }));
+    EXPECT_TRUE(alice.Players().empty());
 }

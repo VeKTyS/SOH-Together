@@ -4,7 +4,7 @@
 param(
     [string]$Instance = "p1",
     [string]$OotArchive = "C:\Games\OOT\oot.o2r",
-    [ValidateSet("Debug", "RelWithDebInfo", "Release")][string]$Config = "Debug"
+    [ValidateSet("Debug", "Release")][string]$Config = "Debug"
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot

@@ -51,6 +51,41 @@ index 7ce3037b8..b38ee03cb 100644
  void GameInteractor_ExecuteOnTimestamp(u8 item);
  void GameInteractor_ExecuteOnPlayerBonk();
  void GameInteractor_ExecuteOnPlayerSetModels(Player* player, u8 modelGroup);
+diff --git a/soh/soh/Enhancements/game-interactor/vanilla-behavior/GIVanillaBehavior.h b/soh/soh/Enhancements/game-interactor/vanilla-behavior/GIVanillaBehavior.h
+index 6f38baef1..0d3aac5fc 100644
+--- a/soh/soh/Enhancements/game-interactor/vanilla-behavior/GIVanillaBehavior.h
++++ b/soh/soh/Enhancements/game-interactor/vanilla-behavior/GIVanillaBehavior.h
+@@ -4175,4 +4175,30 @@ typedef enum {
+     // - none
+     VB_EMPTY_BOTTLE_OI,
+ 
++    // #### `result`
++    // ```c
++    // true
++    // ```
++    // #### `args`
++    // - `*Player`
++    //
++    // Co-op (Anchor): gates the GAMEOVER_DEATH_WAIT_GROUND -> GAMEOVER_DEATH_DELAY_MENU
++    // advance in func_80843AE8 (z_player.c). Returning false parks the dead player in
++    // WAIT_GROUND - pauseCtx never reaches 8, so the world keeps running and a solo death
++    // spectates instead of freezing both screens; returns true (vanilla) once the partner
++    // is also down/disconnected, so both run game-over and respawn together.
++    VB_ADVANCE_TO_GAME_OVER_MENU,
++
++    // #### `result`
++    // ```c
++    // true
++    // ```
++    // #### `args`
++    // - None
++    //
++    // Co-op (Anchor): gates GameOver_FadeInLights in Play_Draw (z_play.c). Returning false
++    // suppresses the game-over screen dim while a co-op player is DOWNED/spectating a
++    // solo death (left untouched for fairy revives and real both-dead game-overs).
++    VB_FADE_IN_GAME_OVER_LIGHTS,
++
+ } GIVanillaBehavior;
 diff --git a/soh/src/code/z_collision_check.c b/soh/src/code/z_collision_check.c
 index be81fcca0..8bcc521a1 100644
 --- a/soh/src/code/z_collision_check.c
@@ -135,6 +170,21 @@ index be81fcca0..8bcc521a1 100644
  
      if (FrameAdvance_IsEnabled(play) == true) {
          return -1;
+diff --git a/soh/src/code/z_play.c b/soh/src/code/z_play.c
+index 729edd0e2..22eb37d4c 100644
+--- a/soh/src/code/z_play.c
++++ b/soh/src/code/z_play.c
+@@ -1296,7 +1296,9 @@ void Play_DrawOverlayElements(PlayState* play) {
+     Message_Draw(play);
+ 
+     if (play->gameOverCtx.state != GAMEOVER_INACTIVE) {
+-        GameOver_FadeInLights(play);
++        if (GameInteractor_Should(VB_FADE_IN_GAME_OVER_LIGHTS, true)) {
++            GameOver_FadeInLights(play);
++        }
+     }
+ }
+ 
 diff --git a/soh/src/code/z_skelanime.c b/soh/src/code/z_skelanime.c
 index e48259e15..e3b4318f1 100644
 --- a/soh/src/code/z_skelanime.c
@@ -163,3 +213,18 @@ index e48259e15..e3b4318f1 100644
  }
  
  /**
+diff --git a/soh/src/overlays/actors/ovl_player_actor/z_player.c b/soh/src/overlays/actors/ovl_player_actor/z_player.c
+index 6dc2e125d..89cf4afa1 100644
+--- a/soh/src/overlays/actors/ovl_player_actor/z_player.c
++++ b/soh/src/overlays/actors/ovl_player_actor/z_player.c
+@@ -9502,7 +9502,9 @@ void func_80843AE8(PlayState* play, Player* this) {
+         Player_PlaySfx(this, NA_SE_EV_FIATY_HEAL - SFX_FLAG);
+         OnePointCutscene_Init(play, 9908, 125, &this->actor, CAM_ID_MAIN);
+     } else if (play->gameOverCtx.state == GAMEOVER_DEATH_WAIT_GROUND) {
+-        play->gameOverCtx.state = GAMEOVER_DEATH_DELAY_MENU;
++        if (GameInteractor_Should(VB_ADVANCE_TO_GAME_OVER_MENU, true, this)) {
++            play->gameOverCtx.state = GAMEOVER_DEATH_DELAY_MENU;
++        }
+     }
+ }
+ 

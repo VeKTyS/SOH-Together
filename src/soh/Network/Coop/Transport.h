@@ -9,8 +9,10 @@
 
 #include "soh/Network/Coop/Handshake.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -67,6 +69,66 @@ struct TransportConfig {
 // the public (internet) address is only known to the router.
 std::vector<std::string> LocalIPv4Addresses();
 
+// An IPv4 address and a UDP port, like 203.0.113.5:27720
+struct UdpEndpoint {
+    std::string ip;
+    uint16_t port = 0;
+
+    std::string Text() const {
+        return ip + ":" + std::to_string(port);
+    }
+    bool operator==(const UdpEndpoint&) const = default;
+};
+
+// "1.2.3.4:5" -> endpoint. Numbers only (no host names), port 1-65535.
+bool ParseUdpEndpoint(const std::string& text, UdpEndpoint& out);
+
+// Little helpers for room codes / same wifi (CoopLobby.cpp). They're here and not in
+// CoopLobby.cpp so the tests can reach them without the game.
+namespace Nat {
+
+// STUN (RFC 5389): ask a public server "what address do you see me as?".
+// Copied from Crests of Courage online.cpp (send_stun_requests / parse_stun).
+inline constexpr uint32_t kStunCookie = 0x2112A442u;
+using StunTxn = std::array<uint8_t, 12>;
+std::vector<uint8_t> StunRequest(const StunTxn& txn);
+// Cookie in the right spot and top bits clear. Doesn't check the transaction.
+bool LooksLikeStun(std::span<const uint8_t> data);
+StunTxn StunTxnOf(std::span<const uint8_t> data); // call only when LooksLikeStun()
+// Reads a binding success reply: XOR-MAPPED-ADDRESS if there, else MAPPED-ADDRESS. IPv4 only.
+bool ParseStunReply(std::span<const uint8_t> data, UdpEndpoint& mapped);
+
+// Hole punching packets (Crests of Courage online.cpp send_punch / on_punch):
+// "CPH1" + token (8 bytes, little endian) + kind. Exactly 13 bytes.
+enum class PunchKind : uint8_t { Probe = 1, Answer = 2 };
+inline constexpr size_t kPunchSize = 4 + 8 + 1;
+std::vector<uint8_t> PunchPacket(uint64_t token, PunchKind kind);
+bool ParsePunch(std::span<const uint8_t> data, uint64_t& token, PunchKind& kind);
+
+// 16 hex digits -> token (online.cpp parse_hex_token)
+bool ParseHexToken(const std::string& text, uint64_t& out);
+// Upper case letters and digits only, the rest is dropped (mod.cpp normalize_room_code)
+std::string NormalizeRoomCode(const std::string& typed);
+inline constexpr size_t kRoomNameMin = 4;
+inline constexpr size_t kRoomNameMax = 24;
+
+// 10.x, 172.16-31.x, 192.168.x
+bool IsPrivateIPv4(const std::string& ip);
+// This PC's address on the home network (the one used to reach the internet), "" if it's
+// not a private one. Sends nothing. Copied from Crests of Courage lan.cpp.
+std::string LanAddress();
+// Our Tailscale address (100.64.0.0/10), "" if Tailscale is off (lan.cpp too).
+std::string TailscaleAddress();
+
+// "Find games on my wifi": a broadcast probe, the host answers with its port and name.
+// Our own (Crests of Courage only finds same-wifi players through the room server).
+std::vector<uint8_t> LanProbe();
+bool IsLanProbe(std::span<const uint8_t> data);
+std::vector<uint8_t> LanAnswer(uint16_t protocol, uint16_t port, const std::string& name);
+bool ParseLanAnswer(std::span<const uint8_t> data, uint16_t& protocol, uint16_t& port, std::string& name);
+
+} // namespace Nat
+
 class Transport {
   public:
     // port 0 lets the OS pick a free port (see LocalPort()). nullptr on failure.
@@ -99,11 +161,37 @@ class Transport {
     // 500 ms and starts at a default of 500 ms, so the first second is not
     // meaningful. 0 for an unknown peer.
     uint32_t RoundTripMs(PeerId peer) const;
+    // Everything sent / received since this transport started, in bytes (for the Network tab)
+    uint64_t BytesSent() const;
+    uint64_t BytesReceived() const;
 
     // ENet's disconnect payload is a single integer: reason in the low byte,
     // handshake error in the next one. Exposed for tests and diagnostics.
     static uint32_t EncodeDisconnectData(DisconnectReason reason, HandshakeError error);
     static void DecodeDisconnectData(uint32_t data, DisconnectReason& reason, HandshakeError& error);
+
+    // --- our own little packets on the game socket (room codes, same wifi: CoopLobby.cpp) ---
+    // Crests of Courage (online.cpp) asks STUN and punches the NAT from the same UDP socket
+    // the game then plays on, because a NAT hole only works for the socket that made it.
+    // So these let CoopLobby send and read its packets on the ENet socket, next to ENet's.
+
+    // Gets every datagram that lands on a game socket, before ENet. Return true if it was
+    // yours (ENet never sees it then). Runs inside Poll() / PollJoinSocket(), game thread.
+    using RawHandler = std::function<bool(const UdpEndpoint& from, std::span<const uint8_t> data)>;
+    static void SetRawHandler(RawHandler handler);
+    // Sends from the join socket if it's open, else from the newest Transport. False if none.
+    static bool SendRaw(const UdpEndpoint& to, std::span<const uint8_t> data);
+    // Same, from this transport's socket.
+    bool SendRawFrom(const UdpEndpoint& to, std::span<const uint8_t> data);
+
+    // Joiner side: opens the socket the next Connect() will use (any free port), so STUN
+    // and the punch happen on it before we know where to connect. Can broadcast (same wifi).
+    // Returns its port, 0 on failure. Opening it twice keeps the first one.
+    static uint16_t OpenJoinSocket();
+    static void CloseJoinSocket();
+    static bool JoinSocketOpen();
+    // Reads what landed on the join socket and gives it to the raw handler (call every frame).
+    static void PollJoinSocket();
 
   private:
     struct PeerState {

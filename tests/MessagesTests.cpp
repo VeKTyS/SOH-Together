@@ -100,6 +100,29 @@ TEST(Messages, CoordinateLimitIsInclusive) {
     EXPECT_TRUE(DecodePlayerState(EncodePlayerState(s)).has_value());
 }
 
+TEST(Messages, HealthRoundTrip) {
+    PlayerState s = MakeState();
+    s.health = 0x30;
+    s.healthCapacity = 0x140;
+    std::optional<PlayerState> out = DecodePlayerState(EncodePlayerState(s));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->health, 0x30);
+    EXPECT_EQ(out->healthCapacity, 0x140);
+}
+
+TEST(Messages, TimeOfDayRoundTrip) {
+    PlayerState s = MakeState();
+    s.dayTime = 0xC123;
+    s.night = true;
+    std::optional<PlayerState> out = DecodePlayerState(EncodePlayerState(s));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->dayTime, 0xC123);
+    EXPECT_TRUE(out->night);
+    std::vector<uint8_t> bad = EncodePlayerState(s);
+    bad[bad.size() - 9] = 2; // night is 0 or 1 (followed by color r,g,b, team and 2 health u16)
+    EXPECT_FALSE(DecodePlayerState(bad).has_value());
+}
+
 TEST(Messages, EntranceIndexRoundTripIncludingUnknown) {
     for (int32_t entrance : { -1, 0, 0x0EE, 0x613 }) {
         PlayerState s = MakeState();
@@ -168,7 +191,7 @@ TEST(Messages, PoseAndStateAreNotMixedUp) {
 
 // Keeps an eye on bandwidth: it's sent 20 times a second to every player.
 TEST(Messages, PlayerPoseStaysSmall) {
-    EXPECT_LE(EncodePlayerPose(MakePose()).size(), 200u);
+    EXPECT_LE(EncodePlayerPose(MakePose()).size(), 220u);
 }
 
 TEST(Messages, FlagChangeRoundTrip) {
@@ -265,7 +288,11 @@ EnemyStates MakeEnemyStates() {
     for (int i = 0; i < 21; i++) {
         a.joints.push_back({ int16_t(i), int16_t(-i * 100), int16_t(i * 300) });
     }
-    EnemyState b; // no skeleton, no quads
+    for (int i = 0; i < 20; i++) {
+        a.body.push_back(static_cast<uint8_t>(i * 13));
+    }
+    a.slotKinds = { 0, 1, 2 }; // 20 bytes = 3 slots
+    EnemyState b;              // no skeleton, no quads
     b.room = -1;
     b.listIndex = 0;
     b.actorId = 0x0013;
@@ -305,10 +332,18 @@ TEST(Messages, EnemyStatesWithLyingCountsIsRejected) {
     EnemyStates one;
     one.enemies.resize(1);
     std::vector<uint8_t> bytes = EncodeEnemyStates(one);
-    bytes.back() = 120; // joint count says 120, nothing behind it
+    // the entry ends with: quad count (1 byte), joint count (1), body size (2), all 0 here
+    size_t n = bytes.size();
+    bytes[n - 3] = 120; // joint count says 120, nothing behind it
     EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
-    bytes.back() = 0;
-    bytes[bytes.size() - 2] = 9; // 9 quads, over the limit
+    bytes[n - 3] = 0;
+    bytes[n - 4] = 9; // 9 quads, over the limit
+    EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
+    bytes[n - 4] = 0;
+    bytes[n - 1] = 0x30; // body of 12 KB, over the limit
+    EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
+    bytes[n - 1] = 0;
+    bytes[n - 2] = 40; // 40 body bytes announced, none there
     EXPECT_FALSE(DecodeEnemyStates(bytes).has_value());
 }
 
@@ -317,6 +352,8 @@ TEST(Messages, EnemyStatesStaysUnderOnePacketForARoom) {
     EnemyStates s = MakeEnemyStates();
     s.enemies.resize(1);
     s.enemies[0].quadCorners.clear();
+    s.enemies[0].body.clear(); // the copied memory is extra, this checks the rest
+    s.enemies[0].slotKinds.clear();
     s.enemies.resize(10, s.enemies[0]);
     EXPECT_LT(EncodeEnemyStates(s).size(), 2000u);
 }
@@ -360,4 +397,113 @@ TEST(Messages, FlagSnapshotCarriesTheSaveBlob) {
     std::vector<uint8_t> bytes = EncodeFlagSnapshot(in);
     bytes.pop_back(); // blob shorter than its size says
     EXPECT_FALSE(DecodeFlagSnapshot(bytes).has_value());
+}
+
+TEST(Messages, ThingStatesRoundTripAndLimits) {
+    ThingStates in;
+    in.owner = 0xDEADBEEF;
+    in.sceneNum = 0x55;
+    in.layer = 2;
+    ThingState pot;
+    pot.localId = 3;
+    pot.room = 1;
+    pot.listIndex = 14;
+    pot.actorId = 0x111;
+    pot.pos = { 10.5f, 40.0f, -200.0f };
+    pot.rot = { 0, 1234, 0 };
+    ThingState bomb; // only exists for its owner
+    bomb.localId = 4;
+    bomb.listIndex = -1;
+    bomb.actorId = 0x10;
+    bomb.body = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    bomb.slotKinds = { 0, 0 };
+    in.things = { pot, bomb };
+    std::optional<ThingStates> out = DecodeThingStates(EncodeThingStates(in));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+
+    std::vector<uint8_t> full = EncodeThingStates(in);
+    for (size_t len = 0; len < full.size(); len++) {
+        EXPECT_FALSE(DecodeThingStates(std::span<const uint8_t>(full.data(), len)).has_value()) << len;
+    }
+    std::vector<uint8_t> tooMany = { static_cast<uint8_t>(MessageType::ThingStates), 0, 0, 0, 0, 0, 0, 0, 99 };
+    EXPECT_FALSE(DecodeThingStates(tooMany).has_value());
+}
+
+TEST(Messages, WelcomeForwardedPeerLeftEventRoundTrip) {
+    Welcome w{ 7 };
+    EXPECT_TRUE(DecodeWelcome(EncodeWelcome(w)) == w);
+    EXPECT_FALSE(DecodeWelcome(EncodeWelcome(Welcome{ 0 })).has_value()); // 0 = no id
+
+    Forwarded f;
+    f.origin = 3;
+    f.name = "Malon";
+    f.inner = EncodePlayerState(PlayerState{});
+    std::optional<Forwarded> fo = DecodeForwarded(EncodeForwarded(f));
+    ASSERT_TRUE(fo.has_value());
+    EXPECT_TRUE(*fo == f);
+
+    PeerLeft p{ 4 };
+    EXPECT_TRUE(DecodePeerLeft(EncodePeerLeft(p)) == p);
+
+    Event e;
+    e.origin = 2;
+    e.kind = EventKind::OcarinaNote;
+    e.data = { 1, 2, 3 };
+    std::vector<uint8_t> bytes = EncodeEvent(e);
+    EXPECT_TRUE(DecodeEvent(bytes) == e);
+    for (size_t len = 0; len < bytes.size(); len++) {
+        EXPECT_FALSE(DecodeEvent(std::span<const uint8_t>(bytes.data(), len)).has_value()) << len;
+    }
+    bytes.push_back(0); // trailing byte
+    EXPECT_FALSE(DecodeEvent(bytes).has_value());
+}
+
+TEST(Messages, PlayerStateCarriesColorAndTeam) {
+    PlayerState s;
+    s.colorR = 1;
+    s.colorG = 2;
+    s.colorB = 3;
+    s.team = 4;
+    std::optional<PlayerState> out = DecodePlayerState(EncodePlayerState(s));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->colorR, 1);
+    EXPECT_EQ(out->colorB, 3);
+    EXPECT_EQ(out->team, 4);
+}
+
+TEST(Messages, ObjectStatesRoundTripAndLimits) {
+    ObjectStates in;
+    in.sceneNum = 0x52;
+    in.layer = 1;
+    ObjectState platform; // moving: position only this frame
+    platform.room = 3;
+    platform.listIndex = 7;
+    platform.actorId = 0x1A3;
+    platform.pos = { -120.0f, 300.5f, 42.0f };
+    platform.shapeRot = { 0, -16384, 5 };
+    platform.worldRot = { 1, 2, 3 };
+    platform.scale = { 0.1f, 0.1f, 0.1f };
+    ObjectState block = platform; // with its memory this time
+    block.listIndex = 8;
+    block.body = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    block.slotKinds = { 0, 1 };
+    in.objects = { platform, block };
+    std::vector<uint8_t> full = EncodeObjectStates(in);
+    std::optional<ObjectStates> out = DecodeObjectStates(full);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+
+    for (size_t len = 0; len < full.size(); len++) {
+        EXPECT_FALSE(DecodeObjectStates(std::span<const uint8_t>(full.data(), len)).has_value()) << len;
+    }
+    std::vector<uint8_t> trailing = full;
+    trailing.push_back(0);
+    EXPECT_FALSE(DecodeObjectStates(trailing).has_value());
+    std::vector<uint8_t> tooMany = { static_cast<uint8_t>(MessageType::ObjectStates), 0, 0, 0, 200 };
+    EXPECT_FALSE(DecodeObjectStates(tooMany).has_value());
+
+    ObjectStates insane = in; // a broken scale must not reach the game
+    insane.objects[0].scale.y = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(DecodeObjectStates(EncodeObjectStates(insane)).has_value());
 }

@@ -1,10 +1,10 @@
 # Builds SoH with our co-op code in it.
 #   powershell -ExecutionPolicy Bypass -File scripts\build-soh.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\build-soh.ps1 -Config RelWithDebInfo
+#   powershell -ExecutionPolicy Bypass -File scripts\build-soh.ps1 -Config Release
 #   powershell -ExecutionPolicy Bypass -File scripts\build-soh.ps1 -Full   # also redo SoH's asset copy
 # First run takes a long time (vcpkg + all of SoH). After that, only what changed.
 param(
-    [ValidateSet("Debug", "RelWithDebInfo", "Release")][string]$Config = "Debug",
+    [ValidateSet("Debug", "Release")][string]$Config = "Debug",
     [switch]$Full
 )
 $ErrorActionPreference = "Stop"

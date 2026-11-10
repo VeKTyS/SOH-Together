@@ -19,7 +19,10 @@
 #include <ship/Context.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <map>
 #include <mutex>
 #include <optional>
 
@@ -33,8 +36,6 @@ extern PlayState* gPlayState;
 namespace SohGui {
 extern std::shared_ptr<SohMenu> mSohMenu;
 } // namespace SohGui
-
-#define CVAR_COOP(var) CVAR_REMOTE("Coop." var)
 
 namespace {
 
@@ -62,7 +63,7 @@ uint64_t LocalBuildHash() {
 Coop::Hello MakeHello() {
     Coop::Hello hello;
     hello.buildHash = LocalBuildHash();
-    hello.seedHash = 0; // no randomizer support yet
+    hello.seedHash = CoopGame::SeedHash(); // CoopRando.cpp
     hello.playerName = CVarGetString(CVAR_COOP("Name"), "");
     return hello;
 }
@@ -89,6 +90,15 @@ Coop::PlayerState ReadLocalState() {
     state.z = player->actor.world.pos.z;
     state.yaw = player->actor.shape.rot.y;
     state.entranceIndex = gSaveContext.entranceIndex;
+    state.dayTime = gSaveContext.dayTime;
+    state.night = gSaveContext.nightFlag != 0;
+    Color_RGB8 color = CoopGame::OwnColor();
+    state.colorR = color.r;
+    state.colorG = color.g;
+    state.colorB = color.b;
+    state.team = CoopGame::OwnTeam();
+    state.health = gSaveContext.health;
+    state.healthCapacity = gSaveContext.healthCapacity;
     return state;
 }
 
@@ -139,6 +149,76 @@ void HandleTeleportRequest() {
     }
 }
 
+// Clients live at the host's time of day. Without this, one player can be in
+// the day version of a scene and the other in the night one: different enemies,
+// different NPCs. The new version shows up at the next scene load.
+void FollowHostTime() {
+    Coop::Session& session = GetSession();
+    if (session.Role() != Coop::SessionRole::Connected || !gLocalState.inGame || session.Players().empty()) {
+        return;
+    }
+    if (!CoopGame::RoomSyncTime()) {
+        return; // host turned "Time of day" off
+    }
+    const std::optional<Coop::PlayerState>& host = session.Players()[0].state;
+    if (host && host->inGame) {
+        gSaveContext.dayTime = host->dayTime;
+        gSaveContext.skyboxTime = host->dayTime;
+        gSaveContext.nightFlag = host->night ? 1 : 0;
+    }
+}
+
+// Blocks other feature files add to the Co-op menu (see CoopGame.h)
+struct MenuSection {
+    CoopGame::MenuWhere where;
+    std::function<void()> draw;
+};
+std::map<std::string, MenuSection>& MenuSections() {
+    static std::map<std::string, MenuSection> sections;
+    return sections;
+}
+
+void DrawMenuSections(bool notConnected) {
+    for (auto& [name, section] : MenuSections()) {
+        bool show = section.where == CoopGame::MenuWhere::Always ||
+                    (notConnected ? section.where == CoopGame::MenuWhere::NotConnected
+                                  : section.where == CoopGame::MenuWhere::InSession);
+        if (show) {
+            ImGui::PushID(name.c_str());
+            section.draw();
+            ImGui::PopID();
+        }
+    }
+}
+
+std::map<std::string, std::function<void()>>& BeforeJoinCallbacks() {
+    static std::map<std::string, std::function<void()>> callbacks;
+    return callbacks;
+}
+
+// Feature files' frame and event callbacks (see CoopGame.h)
+std::map<std::string, std::function<void()>>& FrameCallbacks() {
+    static std::map<std::string, std::function<void()>> callbacks;
+    return callbacks;
+}
+
+std::map<Coop::EventKind, std::map<std::string, std::function<void(const Coop::Event&)>>>& EventHandlers() {
+    static std::map<Coop::EventKind, std::map<std::string, std::function<void(const Coop::Event&)>>> handlers;
+    return handlers;
+}
+
+void DispatchEvents() {
+    for (const Coop::Event& e : GetSession().TakeEvents()) {
+        auto it = EventHandlers().find(e.kind);
+        if (it == EventHandlers().end()) {
+            continue; // nobody handles this kind (yet)
+        }
+        for (auto& [name, fn] : it->second) {
+            fn(e);
+        }
+    }
+}
+
 void OnFrame() {
     std::lock_guard lock(CoopGame::Mutex());
     gLocalState = ReadLocalState();
@@ -147,11 +227,39 @@ void OnFrame() {
     }
     Coop::PlayerPose pose;
     bool hasPose = gLocalState.inGame && CoopGame::ReadLocalPose(pose);
+    auto t0 = std::chrono::steady_clock::now();
     GetSession().Tick(gLocalState, hasPose ? &pose : nullptr);
+    auto t1 = std::chrono::steady_clock::now();
+    FollowHostTime();
     CoopGame::UpdatePuppets();
     CoopGame::UpdateFlags();
+    auto t2 = std::chrono::steady_clock::now();
     CoopGame::UpdateEnemies();
+    auto t3 = std::chrono::steady_clock::now();
     CoopGame::UpdateItems();
+    CoopGame::UpdateThings();
+    if (CoopGame::SessionActive()) {
+        DispatchEvents();
+        for (auto& [name, fn] : FrameCallbacks()) {
+            fn();
+        }
+    }
+
+    // every ~10 s while connected, how long our part of the frame takes (to chase lag)
+    static double sNet = 0, sEnemies = 0, sMax = 0;
+    static int sFrames = 0;
+    auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    sNet += ms(t0, t1);
+    sEnemies += ms(t2, t3);
+    sMax = std::max(sMax, ms(t0, t3));
+    if (++sFrames >= 200) {
+        if (GetSession().Role() != Coop::SessionRole::Off) {
+            SPDLOG_INFO("[Coop] Perf: network {:.2f} ms, enemies {:.2f} ms per frame (worst frame {:.2f} ms)",
+                        sNet / sFrames, sEnemies / sFrames, sMax);
+        }
+        sNet = sEnemies = sMax = 0;
+        sFrames = 0;
+    }
 }
 
 void SaveCVars() {
@@ -170,6 +278,62 @@ std::string Where(const Coop::PlayerState& s) {
     return scene + ", room " + std::to_string(s.roomNum) + (s.linkAge == LINK_AGE_CHILD ? ", child" : ", adult");
 }
 
+// Scenes Anchor won't teleport into (soh/Network/Anchor/Packets/RequestTeleport.cpp,
+// CanTeleportTo): their entrance/room data doesn't put you back where they stand.
+const char* SceneTeleportBlocker(const Coop::PlayerState& them) {
+    switch (them.sceneNum) {
+        case SCENE_ID_MAX:
+        case SCENE_GROTTOS:
+        case SCENE_MARKET_DAY:
+        case SCENE_MARKET_NIGHT:
+        case SCENE_MARKET_RUINS:
+        case SCENE_MARKET_ENTRANCE_DAY:
+        case SCENE_MARKET_ENTRANCE_NIGHT:
+        case SCENE_MARKET_ENTRANCE_RUINS:
+        case SCENE_TEMPLE_OF_TIME_EXTERIOR_DAY:
+        case SCENE_TEMPLE_OF_TIME_EXTERIOR_NIGHT:
+        case SCENE_TEMPLE_OF_TIME_EXTERIOR_RUINS:
+        case SCENE_BACK_ALLEY_DAY:
+        case SCENE_BACK_ALLEY_NIGHT:
+            return "Can't teleport into that place (grottos, market, Temple of Time outside, back alley)";
+        case SCENE_OUTSIDE_GANONS_CASTLE:
+            if (gSaveContext.linkAge == LINK_AGE_CHILD) {
+                return "Child Link can't go outside Ganon's Castle";
+            }
+            break;
+        case SCENE_HYRULE_CASTLE:
+            if (gSaveContext.linkAge == LINK_AGE_ADULT) {
+                return "Adult Link can't go to Hyrule Castle";
+            }
+            break;
+        default:
+            break;
+    }
+    return nullptr;
+}
+
+void DrawOwnLook() {
+    // color: your tunic tint and minimap arrow, same idea as Anchor's
+    Color_RGB8 c = CoopGame::OwnColor();
+    float rgb[3] = { c.r / 255.0f, c.g / 255.0f, c.b / 255.0f };
+    if (ImGui::ColorEdit3("Your color", rgb, ImGuiColorEditFlags_NoInputs)) {
+        Color_RGB8 out = { static_cast<uint8_t>(rgb[0] * 255), static_cast<uint8_t>(rgb[1] * 255),
+                           static_cast<uint8_t>(rgb[2] * 255) };
+        CVarSetColor24(CVAR_COOP("Color.Value"), out);
+        SaveCVars();
+    }
+    bool tint = CVarGetInteger(CVAR_COOP("TintTunics"), 1) != 0;
+    if (ImGui::Checkbox("Tunics in each player's color", &tint)) {
+        CVarSetInteger(CVAR_COOP("TintTunics"), tint ? 1 : 0);
+        SaveCVars();
+    }
+    bool fairy = CVarGetInteger(CVAR_COOP("PuppetFairy"), 1) != 0;
+    if (ImGui::Checkbox("A fairy follows each teammate", &fairy)) {
+        CVarSetInteger(CVAR_COOP("PuppetFairy"), fairy ? 1 : 0);
+        SaveCVars();
+    }
+}
+
 void DrawPlayer(const Coop::RemotePlayer& p) {
     ImGui::Text("%s  -  %u ms", p.name.c_str(), p.pingMs);
     if (!p.state) {
@@ -180,6 +344,12 @@ void DrawPlayer(const Coop::RemotePlayer& p) {
 
     // grayed out with the reason on hover when it's not possible right now
     const char* blocker = Coop::TeleportBlocker(gLocalState, *p.state, ENTR_MAX);
+    if (blocker == nullptr) {
+        blocker = SceneTeleportBlocker(*p.state);
+    }
+    if (blocker == nullptr) {
+        blocker = CoopGame::RoomTeleportBlocker(p);
+    }
     ImGui::PushID(static_cast<int>(p.peer));
     ImGui::BeginDisabled(blocker != nullptr || gTeleportTarget.has_value());
     if (ImGui::SmallButton(("Teleport to " + p.name).c_str())) {
@@ -217,14 +387,13 @@ void DrawOff(Coop::Session& session) {
     if (name.empty()) {
         ImGui::TextDisabled("Pick a name first, your friend will see it.");
     }
+    DrawOwnLook();
     ImGui::Spacing();
 
     ImGui::BeginDisabled(name.empty());
     uint16_t port = static_cast<uint16_t>(CVarGetInteger(CVAR_COOP("Port"), Coop::kDefaultPort));
     if (UIWidgets::Button("Host a game", UIWidgets::ButtonOptions().Color(THEME_COLOR))) {
-        if (session.Host(port, MakeHello())) {
-            gHostAddresses = Coop::LocalIPv4Addresses();
-        }
+        CoopGame::StartHost(port);
     }
 
     ImGui::SeparatorText("Or join a friend");
@@ -242,10 +411,11 @@ void DrawOff(Coop::Session& session) {
     }
     ImGui::BeginDisabled(!addressOk);
     if (UIWidgets::Button("Join", UIWidgets::ButtonOptions().Color(THEME_COLOR))) {
-        session.Join(host, joinPort, MakeHello());
+        CoopGame::StartJoin(host, joinPort);
     }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
+    DrawMenuSections(true);
 
     // why the last attempt failed, right where you'll try again
     if (!session.LastError().empty()) {
@@ -272,6 +442,9 @@ void DrawHosting(Coop::Session& session) {
     ImGui::TextDisabled("Not on the same network? They need your public IP and UDP port %u", session.Port());
     ImGui::TextDisabled("open on your router (or use Tailscale).");
 
+    DrawOwnLook();
+    CoopGame::DrawRoomSettings();
+    DrawMenuSections(false);
     ImGui::SeparatorText("Players");
     if (session.Players().empty()) {
         ImGui::TextDisabled("Nobody yet...");
@@ -299,6 +472,12 @@ void DrawClient(Coop::Session& session) {
                 ImGui::TextColored(ImVec4(1, 0.6f, 0, 1), "Getting the host's world... (the host must be in game)");
             }
         }
+        DrawOwnLook();
+        CoopGame::DrawRoomSettings();
+        if (gLocalState.inGame && UIWidgets::Button("Get the host's world again", UIWidgets::ButtonOptions())) {
+            CoopGame::RequestResync();
+        }
+        DrawMenuSections(false);
         for (const Coop::RemotePlayer& p : session.Players()) {
             DrawPlayer(p);
         }
@@ -344,11 +523,21 @@ void RegisterCoopFrameHook() {
     CoopGame::RegisterEnemyHooks();
     CoopGame::RegisterItemHooks();
     CoopGame::RegisterWorldHooks();
+    CoopGame::RegisterThingHooks();
+    CoopGame::RegisterMinimapHooks();
 }
 
 } // namespace
 
 namespace CoopGame {
+
+void RequestTeleportToHost() {
+    Coop::Session& session = GetSession();
+    if (session.Role() == Coop::SessionRole::Connected && !session.Players().empty() && !gTeleportTarget) {
+        SPDLOG_INFO("[Coop] Reloading at the host's spot to get the same version of the scene");
+        gTeleportTarget = session.Players()[0].peer;
+    }
+}
 
 Coop::Session& Session() {
     static Coop::Session session([](const std::string& line) { SPDLOG_INFO("[Coop] {}", line); });
@@ -357,13 +546,85 @@ Coop::Session& Session() {
 
 // The menu, the game loop and the puppets all touch the session. They should
 // all run on the game thread, but a lock costs nothing so let's not bet on it.
-std::mutex& Mutex() {
-    static std::mutex mutex;
+std::recursive_mutex& Mutex() {
+    static std::recursive_mutex mutex;
     return mutex;
 }
 
 const Coop::PlayerState& LocalState() {
     return gLocalState;
+}
+
+void OnEveryFrame(const std::string& name, std::function<void()> fn) {
+    std::lock_guard lock(Mutex());
+    FrameCallbacks()[name] = std::move(fn);
+}
+
+void OnEvent(Coop::EventKind kind, const std::string& name, std::function<void(const Coop::Event&)> fn) {
+    std::lock_guard lock(Mutex());
+    EventHandlers()[kind][name] = std::move(fn);
+}
+
+void SendEvent(Coop::EventKind kind, std::vector<uint8_t> data, Coop::Channel channel) {
+    std::lock_guard lock(Mutex());
+    if (SessionActive()) {
+        GetSession().SendEvent(kind, std::move(data), channel);
+    }
+}
+
+void AddMenuSection(const std::string& name, MenuWhere where, std::function<void()> draw) {
+    std::lock_guard lock(Mutex());
+    MenuSections()[name] = { where, std::move(draw) };
+}
+
+void OnBeforeJoin(const std::string& name, std::function<void()> fn) {
+    std::lock_guard lock(Mutex());
+    BeforeJoinCallbacks()[name] = std::move(fn);
+}
+
+bool StartHost(uint16_t port) {
+    std::lock_guard lock(Mutex());
+    if (!GetSession().Host(port, MakeHello())) {
+        return false;
+    }
+    gHostAddresses = Coop::LocalIPv4Addresses();
+    return true;
+}
+
+bool StartJoin(const std::string& host, uint16_t port) {
+    std::lock_guard lock(Mutex());
+    for (auto& [name, fn] : BeforeJoinCallbacks()) {
+        fn();
+    }
+    return GetSession().Join(host, port, MakeHello());
+}
+
+uint32_t SelfId() {
+    return GetSession().SelfId();
+}
+
+bool SessionActive() {
+    Coop::SessionRole role = GetSession().Role();
+    return role == Coop::SessionRole::Hosting || role == Coop::SessionRole::Connected;
+}
+
+std::string PlayerName(uint32_t id) {
+    std::lock_guard lock(Mutex());
+    if (const Coop::RemotePlayer* p = GetSession().FindById(id)) {
+        return p->name;
+    }
+    return "Teammate";
+}
+
+Color_RGB8 OwnColor() {
+    return CVarGetColor24(CVAR_COOP("Color.Value"), Color_RGB8{ 100, 255, 100 });
+}
+
+Color_RGB8 PlayerColor(const Coop::RemotePlayer& player) {
+    if (!player.state) {
+        return Color_RGB8{ 100, 255, 100 };
+    }
+    return Color_RGB8{ player.state->colorR, player.state->colorG, player.state->colorB };
 }
 
 } // namespace CoopGame

@@ -6,14 +6,19 @@
 // angles, gear, held item...) the other player sent us, and Link's normal
 // drawing code does the rest.
 //
-// For now puppets are only visual: you can't hit them, push them or target them.
+// PvP is copied from Anchor too: when the room's PvP mode says this player is
+// an enemy, the puppet gets a body you can hit, and hitting it tells its owner
+// they got hurt (EventKind::DamagePlayer, Anchor Packets/DamagePlayer.cpp).
 
 #include "soh/Network/Coop/CoopGame.h"
+#include "soh/Network/Coop/Wire.h"
 
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/nametag.h"
 #include "soh/ObjectExtension/ObjectExtension.h"
+#include "soh/cvar_prefixes.h"
 
+#include <libultraship/bridge/consolevariablebridge.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -31,7 +36,57 @@ void Player_UseItem(PlayState* play, Player* player, s32 item);
 void Player_Draw(Actor* actor, PlayState* play);
 }
 
+// Room settings, they live in CoopRoom.cpp (Anchor's roomState / TeamId)
+namespace CoopGame {
+// Crests of Courage "Damage" (pvp_damage_percent), the host's, 0-400 (CoopRoom.cpp)
+uint16_t RoomPvpDamagePercent();
+} // namespace CoopGame
+
 namespace {
+
+// copied from Anchor.h: starting at 5 to continue from the last value in the
+// PlayerDamageResponseType enum
+typedef enum {
+    DUMMY_PLAYER_HIT_RESPONSE_STUN = 5,
+    DUMMY_PLAYER_HIT_RESPONSE_FIRE,
+    DUMMY_PLAYER_HIT_RESPONSE_NORMAL,
+} DummyPlayerDamageResponseType;
+
+// copied from Anchor's DummyPlayer.cpp: what each weapon does to a puppet
+DamageTable DummyPlayerDamageTable = {
+    /* Deku nut      */ DMG_ENTRY(0, DUMMY_PLAYER_HIT_RESPONSE_STUN),
+    /* Deku stick    */ DMG_ENTRY(2, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Slingshot     */ DMG_ENTRY(1, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Explosive     */ DMG_ENTRY(2, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Boomerang     */ DMG_ENTRY(0, DUMMY_PLAYER_HIT_RESPONSE_STUN),
+    /* Normal arrow  */ DMG_ENTRY(2, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Hammer swing  */ DMG_ENTRY(2, PLAYER_HIT_RESPONSE_KNOCKBACK_LARGE),
+    /* Hookshot      */ DMG_ENTRY(0, DUMMY_PLAYER_HIT_RESPONSE_STUN),
+    /* Kokiri sword  */ DMG_ENTRY(1, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Master sword  */ DMG_ENTRY(2, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Giant's Knife */ DMG_ENTRY(4, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Fire arrow    */ DMG_ENTRY(2, DUMMY_PLAYER_HIT_RESPONSE_FIRE),
+    /* Ice arrow     */ DMG_ENTRY(4, PLAYER_HIT_RESPONSE_FROZEN),
+    /* Light arrow   */ DMG_ENTRY(2, PLAYER_HIT_RESPONSE_ELECTRIFIED),
+    /* Unk arrow 1   */ DMG_ENTRY(2, PLAYER_HIT_RESPONSE_NONE),
+    /* Unk arrow 2   */ DMG_ENTRY(2, PLAYER_HIT_RESPONSE_NONE),
+    /* Unk arrow 3   */ DMG_ENTRY(2, PLAYER_HIT_RESPONSE_NONE),
+    /* Fire magic    */ DMG_ENTRY(0, DUMMY_PLAYER_HIT_RESPONSE_FIRE),
+    /* Ice magic     */ DMG_ENTRY(3, PLAYER_HIT_RESPONSE_FROZEN),
+    /* Light magic   */ DMG_ENTRY(0, PLAYER_HIT_RESPONSE_ELECTRIFIED),
+    /* Shield        */ DMG_ENTRY(0, PLAYER_HIT_RESPONSE_NONE),
+    /* Mirror Ray    */ DMG_ENTRY(0, PLAYER_HIT_RESPONSE_NONE),
+    /* Kokiri spin   */ DMG_ENTRY(1, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Giant spin    */ DMG_ENTRY(4, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Master spin   */ DMG_ENTRY(2, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Kokiri jump   */ DMG_ENTRY(2, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Giant jump    */ DMG_ENTRY(8, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Master jump   */ DMG_ENTRY(4, DUMMY_PLAYER_HIT_RESPONSE_NORMAL),
+    /* Unknown 1     */ DMG_ENTRY(0, PLAYER_HIT_RESPONSE_NONE),
+    /* Unblockable   */ DMG_ENTRY(0, PLAYER_HIT_RESPONSE_NONE),
+    /* Hammer jump   */ DMG_ENTRY(4, PLAYER_HIT_RESPONSE_KNOCKBACK_LARGE),
+    /* Unknown 2     */ DMG_ENTRY(0, PLAYER_HIT_RESPONSE_NONE),
+};
 
 // Stuck on each puppet actor so we know whose Link it is.
 struct PuppetInfo {
@@ -113,14 +168,103 @@ void Puppet_Init(Actor* actor, PlayState* play) {
     player->meleeWeaponEffectIndex = TOTAL_EFFECT_COUNT;
     play->func_11D54(player, play);
 
-    // purely visual for now: no targeting
+    // a body you can hit, copied from Anchor's DummyPlayer_Init. UpdatePvp
+    // only puts it in the game when PvP says so.
+    player->cylinder.base.acFlags = AC_ON | AC_TYPE_PLAYER;
+    player->cylinder.base.ocFlags2 = OC2_TYPE_1;
+    player->cylinder.info.bumperFlags = BUMP_ON | BUMP_HOOKABLE | BUMP_NO_HITMARK;
+    player->actor.flags |= ACTOR_FLAG_HOOKSHOT_PULLS_PLAYER;
+    player->cylinder.dim.radius = 30;
+    player->actor.colChkInfo.damageTable = &DummyPlayerDamageTable;
+
+    // no targeting until PvP says otherwise (UpdatePvp decides every frame)
     actor->flags |= ACTOR_FLAG_LOCK_ON_DISABLED;
-    NameTag_RegisterForActorWithOptions(actor, remote->name.c_str(), {});
 }
 
 void Hide(Actor* actor) {
     actor->world.pos = { -9999.0f, -9999.0f, -9999.0f };
     actor->shape.shadowAlpha = 0;
+    actor->flags |= ACTOR_FLAG_LOCK_ON_DISABLED;
+}
+
+// Did an enemy hit the puppet? Enemies already hurt each player in their own
+// game, sending that hit too would hurt them twice (TrueCoop DummyPlayer.cpp
+// :159-164, the IsTrackedEnemy check). Our synced enemies are the ENEMY / BOSS
+// ones (CoopEnemies.cpp IsSyncedCategory). We look for the pointer in the lists
+// instead of reading it: the enemy may be gone since the hit.
+bool HitByEnemy(PlayState* play, Actor* attacker) {
+    if (attacker == nullptr) {
+        return false;
+    }
+    for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+        for (Actor* a = play->actorCtx.actorLists[cat].head; a != nullptr; a = a->next) {
+            if (a == attacker) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// PvP part of Anchor's DummyPlayer_Update (the end of it), plus TrueCoop's enemy check
+void UpdatePvp(Player* player, PlayState* play, const Coop::RemotePlayer& remote) {
+    Actor* actor = &player->actor;
+    uint8_t pvpMode = CoopGame::RoomPvpMode();
+    if (pvpMode == 0 || (pvpMode == 1 && remote.state->team == CoopGame::OwnTeam())) {
+        actor->flags |= ACTOR_FLAG_LOCK_ON_DISABLED;
+        return;
+    }
+
+    // Crests of Courage "Lock on to players" (pvp.cpp pvp_lock_on): our own
+    // setting, on by default. Off = they can still be hit, just not Z-targeted.
+    // Player already has ATTENTION_ENABLED | HOSTILE (z_player_call.c FLAGS), so
+    // this flag alone decides it (Attention_WeightedDistToPlayerSq skips it).
+    if (CVarGetInteger(CVAR_COOP("LockOnPlayers"), 1) != 0) {
+        actor->flags &= ~ACTOR_FLAG_LOCK_ON_DISABLED;
+    } else {
+        actor->flags |= ACTOR_FLAG_LOCK_ON_DISABLED;
+    }
+
+    if (player->cylinder.base.acFlags & AC_HIT && player->invincibilityTimer == 0 &&
+        !HitByEnemy(play, player->cylinder.base.ac)) {
+        // same fields as Anchor's SendPacket_DamagePlayer: who, damage effect, damage
+        Coop::ByteWriter w;
+        (w.U32)(remote.id); // U32 is also a game macro (r4300.h), the () dodge it
+        w.U8(player->actor.colChkInfo.damageEffect);
+        w.U8(player->actor.colChkInfo.damage);
+        CoopGame::SendEvent(Coop::EventKind::DamagePlayer, w.Take());
+        if (player->actor.colChkInfo.damageEffect == DUMMY_PLAYER_HIT_RESPONSE_STUN) {
+            Actor_SetColorFilter(&player->actor, 0, 0xFF, 0, 24);
+        } else {
+            player->invincibilityTimer = 20;
+        }
+    }
+
+    Collider_UpdateCylinder(&player->actor, &player->cylinder);
+
+    if (!(player->stateFlags2 & PLAYER_STATE2_FROZEN)) {
+        if (!(player->stateFlags1 & (PLAYER_STATE1_DEAD | PLAYER_STATE1_HANGING_OFF_LEDGE |
+                                     PLAYER_STATE1_CLIMBING_LEDGE | PLAYER_STATE1_ON_HORSE))) {
+            CollisionCheck_SetOC(play, &play->colChkCtx, &player->cylinder.base);
+        }
+
+        if (!(player->stateFlags1 & (PLAYER_STATE1_DEAD | PLAYER_STATE1_DAMAGED)) &&
+            (player->invincibilityTimer <= 0)) {
+            CollisionCheck_SetAC(play, &play->colChkCtx, &player->cylinder.base);
+
+            if (player->invincibilityTimer < 0) {
+                CollisionCheck_SetAT(play, &play->colChkCtx, &player->cylinder.base);
+            }
+        }
+    }
+
+    if (player->stateFlags1 & (PLAYER_STATE1_DEAD | PLAYER_STATE1_IN_ITEM_CS | PLAYER_STATE1_IN_CUTSCENE)) {
+        player->actor.colChkInfo.mass = MASS_IMMOVABLE;
+    } else {
+        player->actor.colChkInfo.mass = 50;
+    }
+
+    Collider_ResetCylinderAC(play, &player->cylinder.base);
 }
 
 void Puppet_Update(Actor* actor, PlayState* play) {
@@ -148,7 +292,7 @@ void Puppet_Update(Actor* actor, PlayState* play) {
 
     actor->shape.shadowAlpha = 255;
     actor->world.pos = { s.x, s.y, s.z };
-    actor->shape.rot = { 0, s.yaw, 0 };
+    actor->shape.rot = { p.rotX, s.yaw, p.rotZ };
     for (size_t i = 0; i < Coop::kPoseJointCount; i++) {
         player->skelAnime.jointTable[i] = { p.joints[i].x, p.joints[i].y, p.joints[i].z };
     }
@@ -167,6 +311,22 @@ void Puppet_Update(Actor* actor, PlayState* play) {
     player->unk_862 = InRange<s16>(p.unk_862, -GID_MAXIMUM, GID_MAXIMUM + 1, 0);
     player->unk_85C = p.unk_85C;
     player->av1.actionVar1 = p.actionVar1;
+    // on fire: same flames the game puts on a burning Link (Player_UpdateBodyBurn),
+    // without the damage, that's for the real one
+    for (size_t i = 0; i < p.flameTimers.size() && i < PLAYER_BODYPART_MAX; i++) {
+        uint8_t t = p.flameTimers[i];
+        if (t == 0) {
+            continue;
+        }
+        f32 scale = t > 20 ? CLAMP((t - 20.0f) * 0.01f, 0.19999999f, 0.2f) : t * 0.01f;
+        f32 intensity = CLAMP((t - 25.0f) * 0.02f, 0.0f, 1.0f);
+        // body part -1 + a position relative to the puppet: with a real body part
+        // number the effect sticks to OUR Link (it uses GET_PLAYER), not the puppet
+        Vec3f offset = { player->bodyPartsPos[i].x - player->actor.world.pos.x,
+                         player->bodyPartsPos[i].y - player->actor.world.pos.y,
+                         player->bodyPartsPos[i].z - player->actor.world.pos.z };
+        EffectSsFireTail_SpawnFlame(gPlayState, &player->actor, &offset, scale, -1, intensity);
+    }
 
     // root motion, same as Player_ApplyAnimMovementScaledByAge but with THEIR age
     Vec3f diff;
@@ -191,6 +351,8 @@ void Puppet_Update(Actor* actor, PlayState* play) {
         BorrowAge borrow(s.linkAge, p.buttonItem0);
         Player_SetModelGroup(player, modelGroup);
     }
+
+    UpdatePvp(player, play, *remote);
 }
 
 void Puppet_Draw(Actor* actor, PlayState* play) {
@@ -242,6 +404,84 @@ void RespawnPuppetsIfNeeded() {
     sSpawningFor = 0;
 }
 
+// The puppet of player `id` in our scene, nullptr if they don't have one
+Player* PuppetOfPlayer(uint32_t id) {
+    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_NPC].head; actor != nullptr; actor = actor->next) {
+        const Coop::RemotePlayer* owner = CoopGame::PuppetOwner(actor);
+        if (owner != nullptr && owner->id == id) {
+            return (Player*)actor;
+        }
+    }
+    return nullptr;
+}
+
+// Someone hit our puppet in their game. Copied from Anchor's
+// HandlePacket_DamagePlayer (Packets/DamagePlayer.cpp), with TrueCoop's
+// "already invincible = ignore it" check.
+void OnDamagePlayer(const Coop::Event& e) {
+    Coop::ByteReader r(e.data);
+    uint32_t target = 0;
+    uint8_t damageEffect = 0;
+    uint8_t damage = 0;
+    if (!(r.U32)(target) || !r.U8(damageEffect) || !r.U8(damage) || r.Remaining() != 0) {
+        return;
+    }
+    // everybody gets the event, only the one who got hit cares
+    if (target != CoopGame::SelfId()) {
+        return;
+    }
+    // DMG_ENTRY packs both in 4 bits, anything bigger is a broken packet
+    if (damageEffect > DUMMY_PLAYER_HIT_RESPONSE_NORMAL || damage > 0xF) {
+        return;
+    }
+    if (gPlayState == nullptr) {
+        return;
+    }
+    // Anchor needs the attacker's Link here, to know which way to knock us back
+    Player* otherPlayer = PuppetOfPlayer(e.origin);
+    Player* self = GET_PLAYER(gPlayState);
+    if (otherPlayer == nullptr || self == nullptr) {
+        return;
+    }
+
+    // TrueCoop: our own i-frames win. Two hits landing close together would
+    // otherwise both hurt us.
+    if (self->invincibilityTimer > 0) {
+        return;
+    }
+
+    // Prevent incoming damage during cutscenes or item get sequences
+    if (Player_InBlockingCsMode(gPlayState, self) || self->stateFlags1 & PLAYER_STATE1_IN_ITEM_CS ||
+        self->stateFlags1 & PLAYER_STATE1_GETTING_ITEM) {
+        return;
+    }
+
+    // Crests of Courage "Damage": the host's percent, same rounding as CoC's
+    // hit_power (pvp.cpp): +50 then /100, at least 1 when something should
+    // land, capped at what the field holds
+    int dmg = damage * 8; // Arbitrary number currently, need to fine tune (Anchor)
+    int percent = CoopGame::RoomPvpDamagePercent();
+    int scaled = (dmg * percent + 50) / 100;
+    if (dmg > 0 && scaled < 1 && percent > 0) {
+        scaled = 1;
+    }
+    self->actor.colChkInfo.damage = static_cast<u8>(std::min(scaled, 255));
+
+    if (damageEffect == DUMMY_PLAYER_HIT_RESPONSE_FIRE) {
+        for (int i = 0; i < ARRAY_COUNT(self->bodyFlameTimers); i++) {
+            self->bodyFlameTimers[i] = static_cast<uint8_t>(Rand_S16Offset(0, 200));
+        }
+        self->bodyIsBurning = true;
+    } else if (damageEffect == DUMMY_PLAYER_HIT_RESPONSE_STUN) {
+        self->actor.freezeTimer = 20;
+        Actor_SetColorFilter(&self->actor, 0, 0xFF, 0, 24);
+        return;
+    }
+
+    func_80837C0C(gPlayState, self, damageEffect, 4.0f, 5.0f,
+                  Actor_WorldYawTowardActor(&otherPlayer->actor, &self->actor), 20);
+}
+
 } // namespace
 
 namespace CoopGame {
@@ -259,6 +499,8 @@ bool ReadLocalPose(Coop::PlayerPose& pose) {
         pose.joints[i] = { j.x, j.y, j.z };
     }
     pose.upperLimbRot = { player->upperLimbRot.x, player->upperLimbRot.y, player->upperLimbRot.z };
+    pose.rotX = player->actor.shape.rot.x;
+    pose.rotZ = player->actor.shape.rot.z;
     pose.prevTransl = { player->skelAnime.prevTransl.x, player->skelAnime.prevTransl.y,
                         player->skelAnime.prevTransl.z };
     pose.movementFlags = player->skelAnime.movementFlags;
@@ -276,6 +518,9 @@ bool ReadLocalPose(Coop::PlayerPose& pose) {
     pose.unk_862 = player->unk_862;
     pose.unk_85C = player->unk_85C;
     pose.actionVar1 = player->av1.actionVar1;
+    for (size_t i = 0; i < pose.flameTimers.size() && i < PLAYER_BODYPART_MAX; i++) {
+        pose.flameTimers[i] = player->bodyIsBurning ? player->bodyFlameTimers[i] : 0;
+    }
     return true;
 }
 
@@ -310,6 +555,24 @@ void RegisterPuppetHooks() {
     // a scene load wipes all actors, puppets included
     COND_HOOK(OnSceneSpawnActors, true, []() { sRefreshNeeded = true; });
     COND_HOOK(OnPlayerUpdate, true, RespawnPuppetsIfNeeded);
+    // PvP: a teammate hit our puppet in their game
+    OnEvent(Coop::EventKind::DamagePlayer, "CoopPuppets", OnDamagePlayer);
+}
+
+const Coop::RemotePlayer* PuppetOwner(Actor* puppet) {
+    if (puppet == nullptr || puppet->update != Puppet_Update) {
+        return nullptr;
+    }
+    PuppetInfo* info = ObjectExtension::GetInstance().Get<PuppetInfo>(puppet);
+    if (info == nullptr) {
+        return nullptr;
+    }
+    for (const Coop::RemotePlayer& p : Session().Players()) {
+        if (p.peer == info->peer) {
+            return &p;
+        }
+    }
+    return nullptr;
 }
 
 std::vector<Actor*> VisiblePuppets() {
@@ -324,6 +587,25 @@ std::vector<Actor*> VisiblePuppets() {
         }
     }
     return out;
+}
+
+// Dead puppets stay in VisiblePuppets() (the minimap and the life code still
+// want them), ask this when it matters. Session locked.
+bool PuppetIsDead(Actor* puppet) {
+    if (puppet == nullptr || puppet->update != Puppet_Update) {
+        return false;
+    }
+    // their Link is playing the death animation
+    if (((Player*)puppet)->stateFlags1 & PLAYER_STATE1_DEAD) {
+        return true;
+    }
+    // or they're down / game over (CoopLife.cpp)
+    const Coop::RemotePlayer* owner = PuppetOwner(puppet);
+    if (owner == nullptr) {
+        return false;
+    }
+    LifeState life = PlayerLifeState(owner->id);
+    return life == LifeState::Downed || life == LifeState::GameOver;
 }
 
 } // namespace CoopGame
