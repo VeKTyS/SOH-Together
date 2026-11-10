@@ -44,6 +44,9 @@ bool CanSend() {
 }
 
 void SendItem(uint16_t modId, int16_t getItemId) {
+    if (sApplyingRemote) {
+        return; // Item_Give fires OnItemReceive too: that's the item we just got from the network
+    }
     std::lock_guard lock(CoopGame::Mutex());
     if (!CanSend()) {
         return;
@@ -54,6 +57,9 @@ void SendItem(uint16_t modId, int16_t getItemId) {
 
 void SendDungeon(uint16_t mapIndex) {
     if (mapIndex >= ARRAY_COUNT(gSaveContext.inventory.dungeonKeys)) {
+        return;
+    }
+    if (sApplyingRemote) {
         return;
     }
     std::lock_guard lock(CoopGame::Mutex());

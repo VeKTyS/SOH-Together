@@ -384,8 +384,8 @@ Coop::Session& Session() {
 
 // The menu, the game loop and the puppets all touch the session. They should
 // all run on the game thread, but a lock costs nothing so let's not bet on it.
-std::mutex& Mutex() {
-    static std::mutex mutex;
+std::recursive_mutex& Mutex() {
+    static std::recursive_mutex mutex;
     return mutex;
 }
 

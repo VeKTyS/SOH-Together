@@ -13,8 +13,10 @@ struct Actor; // the game's actor struct (z64actor.h)
 namespace CoopGame {
 
 // The session lives as long as the game. Lock Mutex() before touching it.
+// Recursive on purpose: what we do with the lock held (give an item, set a flag)
+// fires game hooks that lock it again on the same thread.
 Coop::Session& Session();
-std::mutex& Mutex();
+std::recursive_mutex& Mutex();
 
 // Client: reload the scene at the host's spot next frame (same as the Teleport button).
 void RequestTeleportToHost();
