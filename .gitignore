@@ -1,0 +1,23 @@
+# Sorties de compilation
+build/
+out/
+
+# Fichiers de jeu : dérivés de la ROM, jamais versionnés (droit d'auteur)
+*.z64
+*.n64
+*.v64
+*.o2r
+*.otr
+
+# Saves et réglages locaux
+Save/
+logs/
+imgui.ini
+shipofharkinian.json
+
+# Éditeur
+.vs/
+.vscode/settings.json
+
+# Fichiers de référence personnels
+docs/
