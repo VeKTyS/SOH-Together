@@ -114,9 +114,13 @@ class Session {
     void SendDungeonItems(const DungeonItems& items);
     std::vector<DungeonItems> TakeDungeonItems();
 
+    // --- things players carry / throw / their bombs (relayed, latest per owner) ---
+    void SendThingStates(const ThingStates& states);
+    std::vector<ThingStates> TakeThingStates();
+
   private:
     // host: pass a client's message on to the other clients (not back to the sender)
-    void RelayToOthers(PeerId from, std::span<const uint8_t> payload);
+    void RelayToOthers(PeerId from, std::span<const uint8_t> payload, Channel channel = Channel::Ordered);
     void SendToAll(Channel channel, std::span<const uint8_t> bytes);
 
     void HandleEvent(TransportEvent& ev);
@@ -140,6 +144,7 @@ class Session {
     std::vector<EnemyHit> mEnemyHitsIn;
     std::vector<ItemGiven> mItemsIn;
     std::vector<DungeonItems> mDungeonItemsIn;
+    std::vector<ThingStates> mThingsIn; // one per owner, newest wins
 };
 
 } // namespace Coop

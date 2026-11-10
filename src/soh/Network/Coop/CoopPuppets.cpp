@@ -176,7 +176,12 @@ void Puppet_Update(Actor* actor, PlayState* play) {
         }
         f32 scale = t > 20 ? CLAMP((t - 20.0f) * 0.01f, 0.19999999f, 0.2f) : t * 0.01f;
         f32 intensity = CLAMP((t - 25.0f) * 0.02f, 0.0f, 1.0f);
-        EffectSsFireTail_SpawnFlame(gPlayState, &player->actor, &player->bodyPartsPos[i], scale, (s16)i, intensity);
+        // body part -1 + a position relative to the puppet: with a real body part
+        // number the effect sticks to OUR Link (it uses GET_PLAYER), not the puppet
+        Vec3f offset = { player->bodyPartsPos[i].x - player->actor.world.pos.x,
+                         player->bodyPartsPos[i].y - player->actor.world.pos.y,
+                         player->bodyPartsPos[i].z - player->actor.world.pos.z };
+        EffectSsFireTail_SpawnFlame(gPlayState, &player->actor, &offset, scale, -1, intensity);
     }
 
     // root motion, same as Player_ApplyAnimMovementScaledByAge but with THEIR age

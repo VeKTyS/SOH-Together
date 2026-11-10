@@ -121,6 +121,7 @@ void Session::Stop() {
     mEnemyHitsIn.clear();
     mItemsIn.clear();
     mDungeonItemsIn.clear();
+    mThingsIn.clear();
 }
 
 uint16_t Session::Port() const {
@@ -216,6 +217,14 @@ void Session::HandleMessage(RemotePlayer& from, std::span<const uint8_t> payload
                 RelayToOthers(from.peer, payload);
             }
             break;
+        case MessageType::ThingStates:
+            if (std::optional<ThingStates> things = DecodeThingStates(payload)) {
+                auto same = [&](const ThingStates& t) { return t.owner == things->owner; };
+                std::erase_if(mThingsIn, same);
+                mThingsIn.push_back(std::move(*things));
+                RelayToOthers(from.peer, payload, Channel::Snapshot);
+            }
+            break;
         case MessageType::EnemyHit:
             if (std::optional<EnemyHit> hit = DecodeEnemyHit(payload)) {
                 mEnemyHitsIn.push_back(*hit);
@@ -246,13 +255,13 @@ void Session::SendTo(PeerId peer, Channel channel, std::span<const uint8_t> byte
     }
 }
 
-void Session::RelayToOthers(PeerId from, std::span<const uint8_t> payload) {
+void Session::RelayToOthers(PeerId from, std::span<const uint8_t> payload, Channel channel) {
     if (mRole != SessionRole::Hosting) {
         return;
     }
     for (const RemotePlayer& other : mPlayers) {
         if (other.peer != from) {
-            SendTo(other.peer, Channel::Ordered, payload);
+            SendTo(other.peer, channel, payload);
         }
     }
 }
@@ -307,6 +316,14 @@ void Session::SendDungeonItems(const DungeonItems& items) {
 
 std::vector<DungeonItems> Session::TakeDungeonItems() {
     return std::exchange(mDungeonItemsIn, {});
+}
+
+void Session::SendThingStates(const ThingStates& states) {
+    SendToAll(Channel::Snapshot, EncodeThingStates(states));
+}
+
+std::vector<ThingStates> Session::TakeThingStates() {
+    return std::exchange(mThingsIn, {});
 }
 
 void Session::RequestFlagSnapshot() {

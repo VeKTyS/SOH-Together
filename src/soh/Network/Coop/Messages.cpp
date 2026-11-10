@@ -497,4 +497,92 @@ std::optional<DungeonItems> DecodeDungeonItems(std::span<const uint8_t> bytes) {
     return d;
 }
 
+namespace {
+
+void WriteBody(ByteWriter& w, const std::vector<uint8_t>& body, const std::vector<uint8_t>& kinds) {
+    bool ok = body.size() <= kMaxEnemyBody && kinds.size() == (body.size() + 7) / 8;
+    w.U16(static_cast<uint16_t>(ok ? body.size() : 0));
+    if (ok) {
+        for (uint8_t b : body) {
+            w.U8(b);
+        }
+        for (uint8_t k : kinds) {
+            w.U8(k);
+        }
+    }
+}
+
+bool ReadBody(ByteReader& r, std::vector<uint8_t>& body, std::vector<uint8_t>& kinds) {
+    uint16_t size = 0;
+    if (!r.U16(size) || size > kMaxEnemyBody) {
+        return false;
+    }
+    size_t slots = (size + 7u) / 8u;
+    if (r.Remaining() < static_cast<size_t>(size) + slots) {
+        return false;
+    }
+    body.resize(size);
+    for (uint8_t& b : body) {
+        r.U8(b);
+    }
+    kinds.resize(slots);
+    for (uint8_t& k : kinds) {
+        r.U8(k);
+    }
+    return true;
+}
+
+} // namespace
+
+std::vector<uint8_t> EncodeThingStates(const ThingStates& s) {
+    ByteWriter w;
+    w.U8(static_cast<uint8_t>(MessageType::ThingStates));
+    w.U32(s.owner);
+    w.U16(static_cast<uint16_t>(s.sceneNum));
+    w.U8(s.layer);
+    size_t count = std::min(s.things.size(), kMaxThings);
+    w.U8(static_cast<uint8_t>(count));
+    for (size_t i = 0; i < count; i++) {
+        const ThingState& t = s.things[i];
+        w.U16(t.localId);
+        w.U8(static_cast<uint8_t>(t.room));
+        w.U16(static_cast<uint16_t>(t.listIndex));
+        w.U16(static_cast<uint16_t>(t.actorId));
+        w.U16(static_cast<uint16_t>(t.params));
+        WriteVecF(w, t.pos);
+        WriteVec(w, t.rot);
+        WriteBody(w, t.body, t.slotKinds);
+    }
+    return w.Take();
+}
+
+std::optional<ThingStates> DecodeThingStates(std::span<const uint8_t> bytes) {
+    ByteReader r(bytes);
+    ThingStates s;
+    uint8_t type = 0, count = 0;
+    uint16_t scene = 0;
+    if (!r.U8(type) || type != static_cast<uint8_t>(MessageType::ThingStates) || !r.U32(s.owner) || !r.U16(scene) ||
+        !r.U8(s.layer) || !r.U8(count) || count > kMaxThings) {
+        return std::nullopt;
+    }
+    s.sceneNum = static_cast<int16_t>(scene);
+    s.things.resize(count);
+    for (ThingState& t : s.things) {
+        uint8_t room = 0;
+        uint16_t index = 0, id = 0, params = 0;
+        if (!r.U16(t.localId) || !r.U8(room) || !r.U16(index) || !r.U16(id) || !r.U16(params) || !ReadVecF(r, t.pos) ||
+            !ReadVec(r, t.rot) || !ReadBody(r, t.body, t.slotKinds)) {
+            return std::nullopt;
+        }
+        t.room = static_cast<int8_t>(room);
+        t.listIndex = static_cast<int16_t>(index);
+        t.actorId = static_cast<int16_t>(id);
+        t.params = static_cast<int16_t>(params);
+    }
+    if (r.Remaining() != 0) {
+        return std::nullopt;
+    }
+    return s;
+}
+
 } // namespace Coop

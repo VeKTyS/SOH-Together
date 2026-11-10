@@ -27,6 +27,7 @@ enum class MessageType : uint8_t {
     EnemyHit = 8,            // Ordered channel: "I hit that enemy" (relayed by the host)
     ItemGiven = 9,           // Ordered channel: someone got an item, everyone gets it (relayed)
     DungeonItems = 10,       // Ordered channel: keys / map / compass of one dungeon (relayed)
+    ThingStates = 11,        // Snapshot channel: what a player carries / threw / their bombs (relayed)
 };
 
 // Someone got an item. Same ids as SoH's item tables: modId 0 = vanilla
@@ -132,6 +133,36 @@ struct EnemyHit {
 
 std::vector<uint8_t> EncodeEnemyHit(const EnemyHit& hit);
 std::optional<EnemyHit> DecodeEnemyHit(std::span<const uint8_t> bytes);
+
+inline constexpr size_t kMaxThings = 32;
+
+// Something a player moves around: a pot / rock in their hands or flying, or a
+// bomb they placed. listIndex >= 0: it's from the room's actor list, the others
+// already have it and just move theirs. listIndex = -1: it only exists in the
+// owner's game (bombs), the others spawn a look-alike.
+struct ThingState {
+    uint16_t localId = 0; // owner's number for it, to follow it from frame to frame
+    int8_t room = 0;
+    int16_t listIndex = -1;
+    int16_t actorId = 0;
+    int16_t params = 0;
+    Vec3f32 pos;
+    Vec3i16 rot;
+    std::vector<uint8_t> body; // same "rest of the actor's memory" as EnemyState
+    std::vector<uint8_t> slotKinds;
+    bool operator==(const ThingState&) const = default;
+};
+
+struct ThingStates {
+    uint32_t owner = 0; // random number per game, so relayed lists don't get mixed up
+    int16_t sceneNum = 0;
+    uint8_t layer = 0;
+    std::vector<ThingState> things;
+    bool operator==(const ThingStates&) const = default;
+};
+
+std::vector<uint8_t> EncodeThingStates(const ThingStates& states);
+std::optional<ThingStates> DecodeThingStates(std::span<const uint8_t> bytes);
 
 // One flag going up or down. sceneNum = -1 for the global ones (story events etc).
 // flagType uses SoH's FlagType enum, the game side checks it's one we sync.
