@@ -33,6 +33,7 @@ struct RemotePlayer {
     std::string name;
     uint32_t pingMs = 0;
     std::optional<PlayerState> state; // nullopt until the first PlayerState arrives
+    std::optional<PlayerPose> pose;   // nullopt until they're in game
     std::chrono::steady_clock::time_point lastStateAt;
 };
 
@@ -61,8 +62,9 @@ class Session {
     bool Join(const std::string& host, uint16_t port, const Hello& local);
     void Stop();
 
-    // Call once per game frame: processes the network and sends `local` to everyone.
-    void Tick(const PlayerState& local);
+    // Call once per game frame: processes the network and sends `local` to
+    // everyone (plus `pose` when we have one, i.e. when we're in game).
+    void Tick(const PlayerState& local, const PlayerPose* pose = nullptr);
 
     SessionRole Role() const {
         return mRole;

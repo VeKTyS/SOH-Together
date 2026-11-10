@@ -12,6 +12,7 @@ namespace Coop {
 
 enum class MessageType : uint8_t {
     PlayerState = 1, // Snapshot channel, every game frame (20 Hz)
+    PlayerPose = 2,  // Snapshot channel, every game frame while in game
 };
 
 // Where my Link is. Sent every frame, so if one gets lost on the way it's no
@@ -26,6 +27,44 @@ struct PlayerState {
     int16_t yaw = 0;            // binary angle, 0x10000 = full turn
     int32_t entranceIndex = -1; // the door/loading zone they came in by, needed to teleport to them
 };
+
+struct Vec3i16 {
+    int16_t x = 0, y = 0, z = 0;
+    bool operator==(const Vec3i16&) const = default;
+};
+
+// Link's skeleton has 22 limbs + 2 extra slots the animation code uses.
+inline constexpr size_t kPoseJointCount = 24;
+
+// Everything needed to draw someone else's Link exactly like they see it:
+// skeleton angles, what they wear and hold. Field names follow SoH's Player
+// struct (same set as Anchor sends). Values aren't range-checked here, the
+// game side clamps them because it knows the limits (enum sizes).
+struct PlayerPose {
+    Vec3i16 joints[kPoseJointCount];
+    Vec3i16 upperLimbRot;
+    Vec3i16 prevTransl;
+    uint8_t movementFlags = 0;
+    int8_t currentBoots = 0;
+    int8_t currentShield = 0;
+    int8_t currentTunic = 0;
+    uint32_t stateFlags1 = 0;
+    uint32_t stateFlags2 = 0;
+    uint8_t buttonItem0 = 0; // item on B
+    int8_t itemAction = 0;
+    int8_t heldItemAction = 0;
+    uint8_t modelGroup = 0;
+    int8_t invincibilityTimer = 0;
+    int16_t unk_862 = 0; // item shown above Link's head when getting something
+    float unk_85C = 0;   // deku stick length and such
+    int8_t actionVar1 = 0;
+
+    bool operator==(const PlayerPose&) const = default;
+};
+
+std::vector<uint8_t> EncodePlayerPose(const PlayerPose& pose);
+// nullopt if truncated, trailing bytes, wrong type or unk_85C not a normal number.
+std::optional<PlayerPose> DecodePlayerPose(std::span<const uint8_t> bytes);
 
 // Real OoT positions stay way below this. A bigger number means a broken (or
 // nasty) packet, and we don't want that anywhere near the game.

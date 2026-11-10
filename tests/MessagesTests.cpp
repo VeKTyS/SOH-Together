@@ -108,3 +108,64 @@ TEST(Messages, EntranceIndexRoundTripIncludingUnknown) {
         EXPECT_EQ(out->entranceIndex, entrance);
     }
 }
+
+namespace {
+PlayerPose MakePose() {
+    PlayerPose p;
+    for (size_t i = 0; i < kPoseJointCount; i++) {
+        // negative values on purpose: they must survive the trip
+        p.joints[i] = { static_cast<int16_t>(i * 100 - 1200), static_cast<int16_t>(-static_cast<int>(i)),
+                        static_cast<int16_t>(0x7FFF - i) };
+    }
+    p.upperLimbRot = { -1, 2, -3 };
+    p.prevTransl = { 400, -500, 600 };
+    p.movementFlags = 0x05;
+    p.currentBoots = 1;
+    p.currentShield = 3;
+    p.currentTunic = 2;
+    p.stateFlags1 = 0x80000001;
+    p.stateFlags2 = 0x00400000;
+    p.buttonItem0 = 0x3D;
+    p.itemAction = -1;
+    p.heldItemAction = 5;
+    p.modelGroup = 7;
+    p.invincibilityTimer = -20;
+    p.unk_862 = -300;
+    p.unk_85C = 0.75f;
+    p.actionVar1 = -2;
+    return p;
+}
+} // namespace
+
+TEST(Messages, PlayerPoseRoundTripKeepsEveryField) {
+    PlayerPose in = MakePose();
+    std::optional<PlayerPose> out = DecodePlayerPose(EncodePlayerPose(in));
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(*out == in);
+    EXPECT_EQ(PeekType(EncodePlayerPose(in)), MessageType::PlayerPose);
+}
+
+TEST(Messages, PlayerPoseEveryTruncationIsRejected) {
+    std::vector<uint8_t> full = EncodePlayerPose(MakePose());
+    for (size_t len = 0; len < full.size(); len++) {
+        EXPECT_FALSE(DecodePlayerPose(std::span<const uint8_t>(full.data(), len)).has_value()) << "cut at " << len;
+    }
+    full.push_back(0);
+    EXPECT_FALSE(DecodePlayerPose(full).has_value());
+}
+
+TEST(Messages, PlayerPoseWithBrokenFloatIsRejected) {
+    PlayerPose p = MakePose();
+    p.unk_85C = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(DecodePlayerPose(EncodePlayerPose(p)).has_value());
+}
+
+TEST(Messages, PoseAndStateAreNotMixedUp) {
+    EXPECT_FALSE(DecodePlayerPose(EncodePlayerState(MakeState())).has_value());
+    EXPECT_FALSE(DecodePlayerState(EncodePlayerPose(MakePose())).has_value());
+}
+
+// Keeps an eye on bandwidth: it's sent 20 times a second to every player.
+TEST(Messages, PlayerPoseStaysSmall) {
+    EXPECT_LE(EncodePlayerPose(MakePose()).size(), 200u);
+}

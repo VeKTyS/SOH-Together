@@ -151,21 +151,31 @@ void Session::HandleEvent(TransportEvent& ev) {
             break;
         }
         case TransportEvent::Type::Message: {
-            if (PeekType(ev.payload) != MessageType::PlayerState) {
-                break; // unknown types are ignored: forward compatibility within a protocol version
-            }
             RemotePlayer* player = Find(ev.peer);
-            std::optional<PlayerState> state = DecodePlayerState(ev.payload);
-            if (player != nullptr && state.has_value()) {
-                player->state = *state;
-                player->lastStateAt = std::chrono::steady_clock::now();
+            if (player == nullptr) {
+                break;
             }
+            std::optional<MessageType> type = PeekType(ev.payload);
+            if (type == MessageType::PlayerState) {
+                if (std::optional<PlayerState> state = DecodePlayerState(ev.payload)) {
+                    player->state = *state;
+                    player->lastStateAt = std::chrono::steady_clock::now();
+                    if (!state->inGame) {
+                        player->pose.reset(); // back on the title screen: nothing to draw
+                    }
+                }
+            } else if (type == MessageType::PlayerPose) {
+                if (std::optional<PlayerPose> pose = DecodePlayerPose(ev.payload)) {
+                    player->pose = *pose;
+                }
+            }
+            // anything else is ignored (shouldn't happen within one protocol version)
             break;
         }
     }
 }
 
-void Session::Tick(const PlayerState& local) {
+void Session::Tick(const PlayerState& local, const PlayerPose* pose) {
     if (!mTransport) {
         return;
     }
@@ -179,8 +189,15 @@ void Session::Tick(const PlayerState& local) {
     }
 
     std::vector<uint8_t> bytes = EncodePlayerState(local);
+    std::vector<uint8_t> poseBytes;
+    if (pose != nullptr) {
+        poseBytes = EncodePlayerPose(*pose);
+    }
     for (RemotePlayer& player : mPlayers) {
         mTransport->Send(player.peer, Channel::Snapshot, bytes);
+        if (!poseBytes.empty()) {
+            mTransport->Send(player.peer, Channel::Snapshot, poseBytes);
+        }
         player.pingMs = mTransport->RoundTripMs(player.peer);
     }
     // Without this, this frame's state would wait for next frame's Poll(): +50 ms.

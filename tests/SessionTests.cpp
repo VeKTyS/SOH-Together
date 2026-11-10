@@ -176,3 +176,20 @@ TEST(Teleport, BlockedWithAReasonOtherwise) {
     EXPECT_NE(TeleportBlocker(Somewhere(), Somewhere(kEntrances), kEntrances), nullptr);
     EXPECT_NE(TeleportBlocker(Somewhere(), Somewhere(0x0EE, -1), kEntrances), nullptr);
 }
+
+TEST(Session, PoseIsReceivedAndDroppedWhenTheyLeaveTheGame) {
+    Session host, client;
+    ASSERT_TRUE(host.Host(0, MakeHello("Zelda")));
+    ASSERT_TRUE(client.Join("127.0.0.1", host.Port(), MakeHello("Link")));
+
+    PlayerPose pose;
+    pose.modelGroup = 9;
+    PlayerState inGame = StateAt(10);
+    PlayerState onTitle;
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, inGame, [&] {
+        client.Tick(inGame, &pose);
+        return !host.Players().empty() && host.Players()[0].pose && host.Players()[0].pose->modelGroup == 9;
+    }));
+
+    ASSERT_TRUE(TickUntil(host, StateAt(0), client, onTitle, [&] { return !host.Players()[0].pose.has_value(); }));
+}
