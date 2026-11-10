@@ -34,6 +34,11 @@ extern PlayState* gPlayState;
 // libultra's r4300.h has a U32(x) macro (pulled in by the headers above), it breaks ByteWriter::U32
 #undef U32
 
+namespace CoopGame {
+// Crests of Courage "Dungeon progress" host setting (CoopRoom.cpp)
+bool RoomSyncDungeon();
+} // namespace CoopGame
+
 namespace {
 
 using RawAction = GameInteractor::RawAction;
@@ -55,6 +60,12 @@ bool ShouldSync(int16_t scene, int16_t type, int16_t flag) {
         case FLAG_SCENE_TREASURE:
         case FLAG_SCENE_CLEAR:
         case FLAG_SCENE_COLLECTIBLE:
+            // Crests of Courage "Dungeon progress" (chests, switches and doors):
+            // off = every scene flag stays in its own game. The join snapshot
+            // still copies them, like CoC copies the whole save when joining.
+            if (!CoopGame::RoomSyncDungeon()) {
+                return false;
+            }
             break;
         case FLAG_EVENT_CHECK_INF:
         case FLAG_ITEM_GET_INF:
@@ -225,9 +236,14 @@ void AfterGlobalFlagUnset(int16_t type, int16_t flag) {
 }
 
 void ApplyChange(const Coop::FlagChange& c) {
-    if (!IsValid(c) || !ShouldSync(c.sceneNum, c.flagType, c.flag)) {
+    if (!IsValid(c)) {
         SPDLOG_WARN("[Coop] Ignored bad flag from network: scene {} type {} flag {:#x}", c.sceneNum, c.flagType,
                     c.flag);
+        return;
+    }
+    // one we keep to ourselves, or the room's "Dungeon progress" is off (and
+    // a change was already on its way when the host turned it off)
+    if (!ShouldSync(c.sceneNum, c.flagType, c.flag)) {
         return;
     }
     // RawAction writes the bits directly, it does NOT fire the flag hooks, so

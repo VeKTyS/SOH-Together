@@ -43,6 +43,12 @@ extern PlayState* gPlayState;
 // libultra's r4300.h has a U32(x) macro (pulled in by the headers above), it breaks ByteWriter::U32
 #undef U32
 
+namespace CoopGame {
+// Crests of Courage "Keep my own rupees, ammo and hearts" (CoopJoin.cpp): the
+// option is on AND the file we play isn't brand new
+bool JoinKeepsOwnConsumables();
+} // namespace CoopGame
+
 namespace {
 
 // true while we give an item because of the network, so it doesn't bounce back
@@ -463,9 +469,19 @@ bool ApplySaveBlob(const std::vector<uint8_t>& blob) {
         return false;
     }
 
+    // Crests of Courage "Keep my own rupees, ammo and hearts" (join_sync.cpp
+    // load_host_save, keepOwn). Rupees aren't part of it here: our wallet is
+    // shared (TrueCoop RupeeChange, below), keeping ours would just be undone
+    // by the next drift fix, or worse push ours onto everybody.
+    bool keepOwn = CoopGame::JoinKeepsOwnConsumables();
+
     gSaveContext.healthCapacity = t.healthCapacity;
-    // Anchor leaves health alone, but we can't have more than our max
-    if (gSaveContext.health > gSaveContext.healthCapacity) {
+    // CoC: on = our hearts, up to the new max (0 hearts = full); off or a
+    // brand-new file = full. Never the host's current health.
+    // (Anchor only clamped ours to the max, that's the "on" case.)
+    if (keepOwn && gSaveContext.health > 0) {
+        gSaveContext.health = std::min(gSaveContext.health, gSaveContext.healthCapacity);
+    } else {
         gSaveContext.health = gSaveContext.healthCapacity;
     }
     gSaveContext.magicLevel = t.magicLevel;
@@ -493,14 +509,34 @@ bool ApplySaveBlob(const std::vector<uint8_t>& blob) {
         }
     }
 
-    // Restore ammo if it's non-zero, unless it's beans
-    for (int i = 0; i < ARRAY_COUNT(gSaveContext.inventory.ammo); i++) {
-        if (gSaveContext.inventory.ammo[i] != 0 && i != SLOT(ITEM_BEAN) && i != SLOT(ITEM_BEAN + 1)) {
-            t.inventory.ammo[i] = gSaveContext.inventory.ammo[i];
+    // Restore ammo if it's non-zero, unless it's beans (Anchor). Only with the
+    // CoC option on: off, we take the host's ammo like CoC does.
+    if (keepOwn) {
+        for (int i = 0; i < ARRAY_COUNT(gSaveContext.inventory.ammo); i++) {
+            if (gSaveContext.inventory.ammo[i] != 0 && i != SLOT(ITEM_BEAN) && i != SLOT(ITEM_BEAN + 1)) {
+                t.inventory.ammo[i] = gSaveContext.inventory.ammo[i];
+            }
         }
     }
 
     gSaveContext.inventory = t.inventory;
+
+    // CoC: "up to what the host's wallet, quiver, bags ... hold". After the
+    // inventory copy so the capacities are the host's upgrades. A 0 capacity
+    // (no bag at all) is left alone, the item is unusable anyway.
+    if (keepOwn) {
+        auto clampAmmo = [](s32 item, s32 upgrade) {
+            s32 cap = CUR_CAPACITY(upgrade);
+            if (cap > 0 && AMMO(item) > cap) {
+                AMMO(item) = static_cast<s8>(cap);
+            }
+        };
+        clampAmmo(ITEM_BOW, UPG_QUIVER);
+        clampAmmo(ITEM_SLINGSHOT, UPG_BULLET_BAG);
+        clampAmmo(ITEM_BOMB, UPG_BOMB_BAG);
+        clampAmmo(ITEM_STICK, UPG_STICKS);
+        clampAmmo(ITEM_NUT, UPG_NUTS);
+    }
 
     // TrueCoop shared wallet: the running session's wallet wins. After the
     // inventory so the cap uses the wallet we just got. Direct write, no

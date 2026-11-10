@@ -20,6 +20,20 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(enet)
 
+# UPnP: asks the router to open our port by itself (CoopLobby.cpp, Crests of Courage upnp.cpp)
+set(UPNPC_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(UPNPC_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(UPNPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(UPNPC_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
+set(UPNPC_NO_INSTALL ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    miniupnpc
+    GIT_REPOSITORY https://github.com/miniupnp/miniupnp.git
+    GIT_TAG        miniupnpc_2_2_8
+    SOURCE_SUBDIR  miniupnpc
+)
+FetchContent_MakeAvailable(miniupnpc)
+
 # Build id = our commit (+ "-dirty"). Only refreshed when CMake re-runs.
 execute_process(COMMAND git rev-parse --short=12 HEAD
     WORKING_DIRECTORY "${SOHT_ROOT}" OUTPUT_VARIABLE SOHT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
@@ -51,14 +65,16 @@ function(soht_inject_coop)
         "${SOHT_ROOT}/src"
         "${CMAKE_BINARY_DIR}/soht"
         "${enet_SOURCE_DIR}/include"
+        "${miniupnpc_SOURCE_DIR}/miniupnpc/include"
         $<TARGET_PROPERTY:soh,INCLUDE_DIRECTORIES>)
     target_compile_definitions(soht_coop PRIVATE $<TARGET_PROPERTY:soh,COMPILE_DEFINITIONS>)
     target_compile_options(soht_coop PRIVATE $<TARGET_PROPERTY:soh,COMPILE_OPTIONS>)
+    target_compile_definitions(soht_coop PRIVATE MINIUPNP_STATICLIB)
 
     # Mixing static and dynamic C runtimes breaks the link (LNK2038), so copy soh's choice.
     get_target_property(SOH_RUNTIME soh MSVC_RUNTIME_LIBRARY)
     if(SOH_RUNTIME)
-        set_target_properties(soht_coop enet PROPERTIES MSVC_RUNTIME_LIBRARY "${SOH_RUNTIME}")
+        set_target_properties(soht_coop enet libminiupnpc-static PROPERTIES MSVC_RUNTIME_LIBRARY "${SOH_RUNTIME}")
     endif()
     if(MSVC)
         target_compile_options(enet PRIVATE /wd5287 /wd4996)
@@ -67,9 +83,9 @@ function(soht_inject_coop)
     # Only link-time stuff on soh from here: no recompilation of SoH.
     target_sources(soh PRIVATE $<TARGET_OBJECTS:soht_coop>)
     add_dependencies(soh soht_coop)
-    target_link_libraries(soh PRIVATE enet)
+    target_link_libraries(soh PRIVATE enet libminiupnpc-static)
     if(WIN32)
-        target_link_libraries(soh PRIVATE ws2_32 winmm)
+        target_link_libraries(soh PRIVATE ws2_32 winmm iphlpapi)
     endif()
 endfunction()
 

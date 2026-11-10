@@ -69,6 +69,13 @@ void func_8099496C(DoorGerudo* doorGerudo, PlayState* play); // gerudo cell door
 // libultra's r4300.h has a U32(x) macro (pulled in by the headers above), it breaks ByteWriter::U32
 #undef U32
 
+namespace CoopGame {
+// Crests of Courage host settings (CoopRoom.cpp): platforms / blocks follow
+// "World objects", doors follow "Dungeon progress" (chests, switches and doors)
+bool RoomSyncWorldObjects();
+bool RoomSyncDungeon();
+} // namespace CoopGame
+
 namespace {
 
 // --- tuning ---
@@ -817,12 +824,22 @@ void ResetAll() {
     sOpenSent = nullptr;
 }
 
+// "World objects" turned off: every platform runs on its own again
+void ResetPlatforms() {
+    RestoreAllCulls();
+    sHostObjs.clear();
+    sInteracts.clear();
+    sMirrored.clear();
+}
+
 void OnFrame() {
     if (!Active()) {
         ResetAll();
         return;
     }
-    if (CoopGame::Session().Role() == Coop::SessionRole::Hosting) {
+    if (!CoopGame::RoomSyncWorldObjects()) {
+        ResetPlatforms();
+    } else if (CoopGame::Session().Role() == Coop::SessionRole::Hosting) {
         sMirrored.clear();
         HostUpdate();
     } else {
@@ -832,9 +849,13 @@ void OnFrame() {
         }
         ClientUpdate();
     }
-    WatchOurDoor();
+    // "Dungeon progress" off: we stop telling / copying door openings, but a
+    // slide already going finishes (StepShutters), or the door would stay half up
+    if (CoopGame::RoomSyncDungeon()) {
+        WatchOurDoor();
+        OpenFlaggedGerudoDoors();
+    }
     StepShutters();
-    OpenFlaggedGerudoDoors();
     ForgetFinishedDoors();
 }
 
@@ -847,9 +868,9 @@ void OnObjectEvent(const Coop::Event& e) {
     if (!r.U8(sub)) {
         return;
     }
-    if (sub == kEventInteract) {
+    if (sub == kEventInteract && CoopGame::RoomSyncWorldObjects()) {
         OnInteractEvent(r);
-    } else if (sub == kEventDoorOpen) {
+    } else if (sub == kEventDoorOpen && CoopGame::RoomSyncDungeon()) {
         OnDoorEvent(r);
     }
 }

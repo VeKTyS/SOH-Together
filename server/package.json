@@ -1,0 +1,13 @@
+{
+  "name": "soh-together-rooms",
+  "private": true,
+  "type": "module",
+  "description": "Room code server for SOH-Together (port of Crests of Courage's room server)",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node rooms.mjs",
+    "test": "node test-flow.mjs"
+  }
+}

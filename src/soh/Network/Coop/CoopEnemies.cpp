@@ -271,7 +271,7 @@ bool IsBreakableId(int16_t id) {
 }
 
 bool IsKillSynced(Actor* actor) {
-    return IsSyncedCategory(actor) || IsBreakableId(actor->id);
+    return IsSyncedCategory(actor) || (IsBreakableId(actor->id) && CoopGame::RoomSyncWorldObjects());
 }
 
 // Enemy projectiles both games fire on their own (TrueCoop EnemySync.cpp:213-224):

@@ -69,6 +69,13 @@ void EnArrow_Fly(EnArrow* enArrow, PlayState* play);
 // libultra's r4300.h has a U32(x) macro (pulled in by the headers above), it breaks ByteWriter::U32
 #undef U32
 
+namespace CoopGame {
+// Crests of Courage "World objects" host setting (CoopRoom.cpp). Off = room
+// props (pots, rocks, crates...) stay in each game. Bombs / arrows / boomerang
+// ghosts are the player's own stuff, they keep showing.
+bool RoomSyncWorldObjects();
+} // namespace CoopGame
+
 namespace {
 
 // The room an actor spawned in. Props change their actor.room while carried
@@ -281,7 +288,10 @@ void SendOurThings() {
     if (player == nullptr || CoopGame::SelfId() == 0) {
         return; // no player id yet (just connected): others couldn't tell whose things these are
     }
-    if (IsCarryable(player->heldActor)) {
+    // "World objects" off: the props we hold or threw aren't told about
+    if (!CoopGame::RoomSyncWorldObjects()) {
+        sFollowed.clear();
+    } else if (IsCarryable(player->heldActor)) {
         sFollowed[player->heldActor] = 0;
     }
 
@@ -454,6 +464,9 @@ void ApplyTheirThings(uint32_t ownerId, const Coop::ThingStates& list) {
         }
         bool held = (e.flags & kExtraHeld) != 0;
         if (t.listIndex >= 0) {
+            if (!CoopGame::RoomSyncWorldObjects()) {
+                continue; // "World objects" off: our pots stay where they are
+            }
             // a pot / rock from the room they're holding or threw: move ours there
             Actor* a = FindListActor(t.room, t.listIndex, t.actorId);
             if (a == nullptr || a->update == nullptr || (me != nullptr && me->heldActor == a)) {

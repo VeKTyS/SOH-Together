@@ -6,6 +6,12 @@
 // change and every few seconds (so people who join later get them too).
 // Clients only listen to the host. "Sync items & flags" isn't here: in our
 // co-op it's always on.
+//
+// Plus the host settings of Crests of Courage (menu.cpp group_sharing /
+// group_together / group_pvp / group_unfinished, features.cpp
+// local_session_flags): Dungeon progress, World objects, Time of day, Death
+// link, PvP damage, Hold boss fights. Same texts, same defaults. They ride in
+// the same RoomState event, after a version byte.
 #include "soh/Network/Coop/CoopGame.h"
 #include "soh/Network/Coop/Wire.h"
 
@@ -39,11 +45,32 @@ struct RoomState {
     uint8_t pvpMode = 1;           // 0 = off, 1 = on (other teams), 2 = on with friendly fire
     uint8_t showLocationsMode = 1; // 0 = none, 1 = team, 2 = all
     uint8_t teleportMode = 1;      // 0 = off, 1 = team, 2 = all
+    // Crests of Courage session flags (features.cpp kSess*), CoC's defaults
+    bool syncDungeon = true;       // world_dungeon_var: chests, switches, doors
+    bool syncWorldObjects = true;  // enemies_breakables_var: pots, grass, blocks
+    bool syncTime = true;          // sync_time
+    bool deathLink = false;        // death_link
+    bool bossWait = false;         // boss_room_wait
+    uint16_t pvpDamagePercent = 100; // pvp_damage_percent
 };
 
 // Defaults are Anchor's (DefaultIndex(1) in Menu.cpp / PrepRoomState)
 constexpr int32_t kDefaultMode = 1;
 constexpr int32_t kTeamCount = 8;
+
+// CoC's damage slider: 0 to 400 %, steps of 25 (menu.cpp group_pvp)
+constexpr int32_t kDefaultDamage = 100;
+constexpr int32_t kMaxDamage = 400;
+
+// The first 3 bytes are Anchor's fields (the old format). Then this version
+// byte and the CoC fields. A newer version can add bytes at the end, we read
+// what we know and skip the rest.
+constexpr uint8_t kRoomStateVersion = 2;
+constexpr uint8_t kFlagDungeon = 1 << 0;
+constexpr uint8_t kFlagWorldObjects = 1 << 1;
+constexpr uint8_t kFlagTime = 1 << 2;
+constexpr uint8_t kFlagDeathLink = 1 << 3;
+constexpr uint8_t kFlagBossWait = 1 << 4;
 
 // what the host told us last (clients only, the host reads its CVars)
 RoomState sHostState;
@@ -59,6 +86,14 @@ int32_t ReadMode(const char* cvar) {
     return std::clamp(CVarGetInteger(cvar, kDefaultMode), 0, 2);
 }
 
+bool ReadFlag(const char* cvar, bool def) {
+    return CVarGetInteger(cvar, def ? 1 : 0) != 0;
+}
+
+int32_t ReadDamage() {
+    return std::clamp(CVarGetInteger(CVAR_COOP("Room.PvpDamage"), kDefaultDamage), 0, kMaxDamage);
+}
+
 bool IsHost() {
     return CoopGame::Session().Role() == Coop::SessionRole::Hosting;
 }
@@ -69,6 +104,12 @@ RoomState Current() {
         s.pvpMode = static_cast<uint8_t>(ReadMode(CVAR_COOP("Room.PvpMode")));
         s.showLocationsMode = static_cast<uint8_t>(ReadMode(CVAR_COOP("Room.ShowLocationsMode")));
         s.teleportMode = static_cast<uint8_t>(ReadMode(CVAR_COOP("Room.TeleportMode")));
+        s.syncDungeon = ReadFlag(CVAR_COOP("Room.SyncDungeon"), true);
+        s.syncWorldObjects = ReadFlag(CVAR_COOP("Room.SyncWorldObjects"), true);
+        s.syncTime = ReadFlag(CVAR_COOP("Room.SyncTime"), true);
+        s.deathLink = ReadFlag(CVAR_COOP("Room.DeathLink"), false);
+        s.bossWait = ReadFlag(CVAR_COOP("Room.BossWait"), false);
+        s.pvpDamagePercent = static_cast<uint16_t>(ReadDamage());
         return s;
     }
     if (!CoopGame::SessionActive() || CoopGame::SelfId() != sStateForSelfId) {
@@ -84,6 +125,16 @@ void SendRoomState() {
     w.U8(s.pvpMode);
     w.U8(s.showLocationsMode);
     w.U8(s.teleportMode);
+    // CoC's part (features.cpp send_session_settings + pvp.cpp send_state)
+    w.U8(kRoomStateVersion);
+    uint8_t flags = 0;
+    flags |= s.syncDungeon ? kFlagDungeon : 0;
+    flags |= s.syncWorldObjects ? kFlagWorldObjects : 0;
+    flags |= s.syncTime ? kFlagTime : 0;
+    flags |= s.deathLink ? kFlagDeathLink : 0;
+    flags |= s.bossWait ? kFlagBossWait : 0;
+    w.U8(flags);
+    w.U16(s.pvpDamagePercent);
     CoopGame::SendEvent(Coop::EventKind::RoomState, w.Take());
     sLastSent = std::chrono::steady_clock::now();
 }
@@ -95,11 +146,30 @@ void OnRoomState(const Coop::Event& e) {
     }
     Coop::ByteReader r(e.data);
     RoomState s;
-    if (!r.U8(s.pvpMode) || !r.U8(s.showLocationsMode) || !r.U8(s.teleportMode) || r.Remaining() != 0) {
+    if (!r.U8(s.pvpMode) || !r.U8(s.showLocationsMode) || !r.U8(s.teleportMode)) {
         return;
     }
     if (s.pvpMode > 2 || s.showLocationsMode > 2 || s.teleportMode > 2) {
         return;
+    }
+    // only 3 bytes = the old format, the CoC settings keep their defaults
+    if (r.Remaining() > 0) {
+        uint8_t version = 0;
+        uint8_t flags = 0;
+        uint16_t damage = 0;
+        if (!r.U8(version) || version < kRoomStateVersion || !r.U8(flags) || !r.U16(damage)) {
+            return; // broken packet
+        }
+        if (damage > kMaxDamage) {
+            return;
+        }
+        s.syncDungeon = (flags & kFlagDungeon) != 0;
+        s.syncWorldObjects = (flags & kFlagWorldObjects) != 0;
+        s.syncTime = (flags & kFlagTime) != 0;
+        s.deathLink = (flags & kFlagDeathLink) != 0;
+        s.bossWait = (flags & kFlagBossWait) != 0;
+        s.pvpDamagePercent = damage;
+        // a newer version may have more after this: not for us
     }
     sHostState = s;
     sStateForSelfId = CoopGame::SelfId();
@@ -134,6 +204,96 @@ bool ModeCombo(const char* label, const char* cvar, const std::vector<const char
         return true;
     }
     return false;
+}
+
+// CoC's add_toggle: a checkbox on a CVar with its help text
+bool FlagCheckbox(const char* label, const char* cvar, bool def, const char* tooltip) {
+    bool value = ReadFlag(cvar, def);
+    if (UIWidgets::Checkbox(label, &value, UIWidgets::CheckboxOptions().Color(THEME_COLOR).Tooltip(tooltip))) {
+        CVarSetInteger(cvar, value ? 1 : 0);
+        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+        return true;
+    }
+    return false;
+}
+
+// The CoC host settings (menu.cpp build_game). Host: can change them. Client:
+// sees the host's values, grayed out. Folded by default, most people never
+// need to touch them.
+void DrawGameRules() {
+    if (!ImGui::TreeNode("Game rules")) {
+        return;
+    }
+    bool host = IsHost();
+    RoomState s = Current();
+    if (!host) {
+        ImGui::TextDisabled("You are connected, so the host's settings are the ones in use.");
+    }
+    bool changed = false;
+
+    ImGui::BeginDisabled(!host);
+    ImGui::SeparatorText("Share");
+    if (host) {
+        changed |= FlagCheckbox("Dungeon progress", CVAR_COOP("Room.SyncDungeon"), true,
+                                "Chests, switches and doors. Open one and it is open for everybody.");
+        changed |= FlagCheckbox("World objects", CVAR_COOP("Room.SyncWorldObjects"), true,
+                                "Pots, grass, blocks and the like.");
+        changed |= FlagCheckbox("Time of day", CVAR_COOP("Room.SyncTime"), true,
+                                "One clock for everybody, so it is not day for you and night for them.");
+    } else {
+        // read-only copies of the host's values
+        ImGui::Checkbox("Dungeon progress", &s.syncDungeon);
+        ImGui::Checkbox("World objects", &s.syncWorldObjects);
+        ImGui::Checkbox("Time of day", &s.syncTime);
+    }
+
+    ImGui::SeparatorText("Playing together");
+    if (host) {
+        changed |= FlagCheckbox("Death link", CVAR_COOP("Room.DeathLink"), false, "One of you dies, everybody dies.");
+    } else {
+        ImGui::Checkbox("Death link", &s.deathLink);
+    }
+
+    ImGui::SeparatorText("PvP");
+    // CoC grays the damage out while PvP is off (add_number(..., pvp_enabled_var()))
+    ImGui::BeginDisabled(s.pvpMode == 0);
+    int32_t damage = s.pvpDamagePercent;
+    if (UIWidgets::SliderInt("Damage", &damage,
+                             UIWidgets::IntSliderOptions()
+                                 .Min(0)
+                                 .Max(kMaxDamage)
+                                 .Step(25)
+                                 .DefaultValue(kDefaultDamage)
+                                 .Format("%d%%")
+                                 .Color(THEME_COLOR)
+                                 .Tooltip("How much of each hit lands, for everybody.")) &&
+        host) {
+        CVarSetInteger(CVAR_COOP("Room.PvpDamage"), std::clamp(damage, 0, kMaxDamage));
+        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+        changed = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+
+    // our own setting, never the host's (CoC: "Your own setting.")
+    FlagCheckbox("Lock on to players", CVAR_COOP("LockOnPlayers"), true,
+                 "Z-target other players while PvP is on. Your own setting.");
+
+    ImGui::BeginDisabled(!host);
+    ImGui::SeparatorText("Unfinished: these can break your game");
+    if (host) {
+        changed |= FlagCheckbox("Hold boss fights until everyone's there", CVAR_COOP("Room.BossWait"), false,
+                                "The fight waits at the door until the whole party has walked in. Can leave you "
+                                "stuck at the door if someone never arrives.");
+    } else {
+        ImGui::Checkbox("Hold boss fights until everyone's there", &s.bossWait);
+    }
+    ImGui::EndDisabled();
+
+    if (changed && CoopGame::SessionActive()) {
+        SendRoomState();
+    }
+    ImGui::TreePop();
 }
 
 // labels from Anchor's Menu.cpp, a bit more spelled out
@@ -186,6 +346,7 @@ void DrawRoomSettings() {
         ImGui::Text("PvP: %s", kPvpModes[s.pvpMode]);
         ImGui::Text("Show players on the map: %s", kShowLocationsModes[s.showLocationsMode]);
         ImGui::Text("Teleport to: %s", kTeleportModes[s.teleportMode]);
+        DrawGameRules();
         return;
     }
 
@@ -202,6 +363,33 @@ void DrawRoomSettings() {
     if (changed && SessionActive()) {
         SendRoomState();
     }
+    DrawGameRules();
+}
+
+// --- the CoC host settings, read by the feature files ---
+// Host: its own CVars. Client: what the host sent (defaults until then).
+bool RoomSyncDungeon() {
+    return Current().syncDungeon;
+}
+
+bool RoomSyncWorldObjects() {
+    return Current().syncWorldObjects;
+}
+
+bool RoomSyncTime() {
+    return Current().syncTime;
+}
+
+bool RoomDeathLink() {
+    return Current().deathLink;
+}
+
+bool RoomBossWait() {
+    return Current().bossWait;
+}
+
+uint16_t RoomPvpDamagePercent() {
+    return Current().pvpDamagePercent;
 }
 
 // copied from Anchor's CanTeleportTo (Packets/RequestTeleport.cpp), the room

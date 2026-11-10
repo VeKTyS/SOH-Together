@@ -588,3 +588,15 @@ TEST(SessionRelay, SixteenPlayersFit) {
     }
     EXPECT_EQ(host.Players().size(), 15u);
 }
+
+// the host is gone: the other clients' puppets (relayed players) must go with it
+TEST(SessionRelay, LosingTheHostForgetsEveryone) {
+    Session host, alice, bob;
+    ASSERT_TRUE(host.Host(0, MakeHello("Host")));
+    ASSERT_TRUE(alice.Join("127.0.0.1", host.Port(), MakeHello("Alice")));
+    ASSERT_TRUE(bob.Join("127.0.0.1", host.Port(), MakeHello("Bob")));
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.Players().size() == 2; }));
+    host.Stop();
+    ASSERT_TRUE(TickAll(host, alice, bob, [&] { return alice.Role() == SessionRole::Off; }));
+    EXPECT_TRUE(alice.Players().empty());
+}

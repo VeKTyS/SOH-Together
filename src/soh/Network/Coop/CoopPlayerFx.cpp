@@ -4,6 +4,7 @@
 // OcarinaSfx.cpp, AllClientState.cpp, GameComplete.cpp). Only the way the data travels changed:
 // Anchor sends json packets to the clients in the same scene, we send a small event to everyone
 // and the receiver checks the teammate's Link (puppet) is in its scene.
+// "Hear other players" / "Their volume" come from Crests of Courage (menu.cpp group_sound).
 
 #include "soh/Network/Coop/CoopGame.h"
 #include "soh/Network/Coop/Wire.h"
@@ -12,10 +13,15 @@
 #include "soh/Notification/Notification.h"
 #include "soh/ShipInit.hpp"
 #include "soh/ShipUtils.h"
+#include "soh/SohGui/SohGui.hpp"
+#include "soh/SohGui/UIWidgets.hpp"
 #include "soh/cvar_prefixes.h"
 
 #include <libultraship/bridge/consolevariablebridge.h>
+#include <ship/Context.h>
 #include <spdlog/spdlog.h>
+
+#include <algorithm>
 
 #include <cmath>
 #include <cstring>
@@ -84,8 +90,19 @@ bool sApplying = false;
 
 // --- 1. player sounds (Anchor Packets/PlayerSfx.cpp) ---
 
+// "Hear other players" / "Their volume" (Crests of Courage features.cpp sync_sounds /
+// sound_volume, effects.cpp sound_volume()). Off = like CoC: we don't play theirs and
+// don't send ours either.
+bool HearOthers() {
+    return CVarGetInteger(CVAR_COOP("HearOthers"), 1) != 0;
+}
+
+// The audio code keeps a pointer to the volume while the sound plays, so it lives here
+// (one value for everybody, like CoC).
+f32 sTheirVolume = 0.35f;
+
 void OnPlayerSfx(u16 sfxId) {
-    if (sApplying) {
+    if (sApplying || !HearOthers()) {
         return;
     }
     std::lock_guard lock(CoopGame::Mutex());
@@ -103,13 +120,53 @@ void HandlePlayerSfx(const Coop::Event& ev) {
     if (!r.U16(sfxId) || r.Remaining() != 0 || gPlayState == nullptr) {
         return;
     }
+    if (!HearOthers()) {
+        return;
+    }
+    // CoC effects.cpp sound_volume(): percent, 35 by default, 0 = don't play at all
+    int percent = std::clamp(CVarGetInteger(CVAR_COOP("TheirVolume"), 35), 0, 100);
+    if (percent <= 0) {
+        return;
+    }
     Actor* puppet = VisiblePuppetOf(ev.origin);
     if (puppet == nullptr) {
         return;
     }
+    sTheirVolume = percent / 100.0f;
     sApplying = true;
-    Player_PlaySfx(puppet, sfxId);
+    // what Player_PlaySfx does for an actor that isn't Link (z_actor.c), with our volume
+    // in place of gSfxDefaultFreqAndVolScale
+    Audio_PlaySfxGeneral(sfxId, &puppet->projectedPos, 4, &gSfxDefaultFreqAndVolScale, &sTheirVolume,
+                         &gSfxDefaultReverb);
     sApplying = false;
+}
+
+// menu (Crests of Courage menu.cpp group_sound, same texts)
+void DrawSoundSettings() {
+    ImGui::SeparatorText("Sound");
+    bool on = HearOthers();
+    if (ImGui::Checkbox("Hear other players", &on)) {
+        CVarSetInteger(CVAR_COOP("HearOthers"), on ? 1 : 0);
+        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Their sword swings, footsteps and voice, from where they are standing.");
+    }
+    if (!on) {
+        return;
+    }
+    ImGui::Indent();
+    int volume = std::clamp(CVarGetInteger(CVAR_COOP("TheirVolume"), 35), 0, 100);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+    if (ImGui::SliderInt("Their volume", &volume, 0, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp)) {
+        volume = (volume + 2) / 5 * 5; // steps of 5 like CoC
+        CVarSetInteger(CVAR_COOP("TheirVolume"), std::clamp(volume, 0, 100));
+        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Quieter than your own by default, so the room does not double up.");
+    }
+    ImGui::Unindent();
 }
 
 // --- 2. ocarina notes (Anchor Packets/OcarinaSfx.cpp) ---
@@ -294,6 +351,7 @@ void Register() {
     COND_HOOK(OnOcarinaNote, true, OnOcarinaNote);
     CoopGame::OnEvent(Coop::EventKind::PlayerSfx, "PlayerFx.Sfx", HandlePlayerSfx);
     CoopGame::OnEvent(Coop::EventKind::OcarinaNote, "PlayerFx.Ocarina", HandleOcarinaNote);
+    CoopGame::AddMenuSection("PlayerFx.Sound", CoopGame::MenuWhere::Always, DrawSoundSettings);
 
     COND_VB_SHOULD(VB_APPLY_TUNIC_COLOR, true, { TintTunic(args); });
 

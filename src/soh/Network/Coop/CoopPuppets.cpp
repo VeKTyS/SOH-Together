@@ -16,7 +16,9 @@
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/nametag.h"
 #include "soh/ObjectExtension/ObjectExtension.h"
+#include "soh/cvar_prefixes.h"
 
+#include <libultraship/bridge/consolevariablebridge.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -35,6 +37,11 @@ void Player_Draw(Actor* actor, PlayState* play);
 }
 
 // Room settings, they live in CoopRoom.cpp (Anchor's roomState / TeamId)
+namespace CoopGame {
+// Crests of Courage "Damage" (pvp_damage_percent), the host's, 0-400 (CoopRoom.cpp)
+uint16_t RoomPvpDamagePercent();
+} // namespace CoopGame
+
 namespace {
 
 // copied from Anchor.h: starting at 5 to continue from the last value in the
@@ -172,7 +179,6 @@ void Puppet_Init(Actor* actor, PlayState* play) {
 
     // no targeting until PvP says otherwise (UpdatePvp decides every frame)
     actor->flags |= ACTOR_FLAG_LOCK_ON_DISABLED;
-    NameTag_RegisterForActorWithOptions(actor, remote->name.c_str(), {});
 }
 
 void Hide(Actor* actor) {
@@ -209,7 +215,15 @@ void UpdatePvp(Player* player, PlayState* play, const Coop::RemotePlayer& remote
         return;
     }
 
-    actor->flags &= ~ACTOR_FLAG_LOCK_ON_DISABLED;
+    // Crests of Courage "Lock on to players" (pvp.cpp pvp_lock_on): our own
+    // setting, on by default. Off = they can still be hit, just not Z-targeted.
+    // Player already has ATTENTION_ENABLED | HOSTILE (z_player_call.c FLAGS), so
+    // this flag alone decides it (Attention_WeightedDistToPlayerSq skips it).
+    if (CVarGetInteger(CVAR_COOP("LockOnPlayers"), 1) != 0) {
+        actor->flags &= ~ACTOR_FLAG_LOCK_ON_DISABLED;
+    } else {
+        actor->flags |= ACTOR_FLAG_LOCK_ON_DISABLED;
+    }
 
     if (player->cylinder.base.acFlags & AC_HIT && player->invincibilityTimer == 0 &&
         !HitByEnemy(play, player->cylinder.base.ac)) {
@@ -442,7 +456,16 @@ void OnDamagePlayer(const Coop::Event& e) {
         return;
     }
 
-    self->actor.colChkInfo.damage = damage * 8; // Arbitrary number currently, need to fine tune (Anchor)
+    // Crests of Courage "Damage": the host's percent, same rounding as CoC's
+    // hit_power (pvp.cpp): +50 then /100, at least 1 when something should
+    // land, capped at what the field holds
+    int dmg = damage * 8; // Arbitrary number currently, need to fine tune (Anchor)
+    int percent = CoopGame::RoomPvpDamagePercent();
+    int scaled = (dmg * percent + 50) / 100;
+    if (dmg > 0 && scaled < 1 && percent > 0) {
+        scaled = 1;
+    }
+    self->actor.colChkInfo.damage = static_cast<u8>(std::min(scaled, 255));
 
     if (damageEffect == DUMMY_PLAYER_HIT_RESPONSE_FIRE) {
         for (int i = 0; i < ARRAY_COUNT(self->bodyFlameTimers); i++) {

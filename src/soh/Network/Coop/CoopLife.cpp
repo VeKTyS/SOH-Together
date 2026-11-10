@@ -9,6 +9,16 @@
 //   the camera follows that teammate. If they're in another scene we warp your
 //   body there once.
 // - everyone is down: the vanilla game over runs, so you all respawn together.
+//
+// Death link, from Crests of Courage (features.cpp update_death_link /
+// apply_death_link), a host setting: "One of you dies, everybody dies".
+// How it lives with the downed state above:
+// - you really die (no fairy): you tell everybody (EventKind::DeathLink)
+// - they get their health set to 0, so the game kills them its own way (and a
+//   fairy in a bottle saves them, like any death)
+// - now nobody is up anymore, so the downed hold-back above lets go and the
+//   vanilla game over runs for everyone, together. Without death link you stay
+//   downed and watch while a teammate is up.
 #include "soh/Network/Coop/CoopGame.h"
 #include "soh/Network/Coop/Wire.h"
 
@@ -17,6 +27,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <map>
 
 extern "C" {
@@ -33,6 +44,11 @@ extern PlayState* gPlayState;
 // string (the asset path), cast at the call like TrueCoop does.
 void func_80836448(PlayState* play, Player* thisx, LinkAnimationHeader* anim);
 }
+
+namespace CoopGame {
+// Crests of Courage "Death link" host setting (CoopRoom.cpp)
+bool RoomDeathLink();
+} // namespace CoopGame
 
 namespace {
 
@@ -65,6 +81,11 @@ constexpr uint32_t kResendFrames = 60; // ~3 s at 20 fps
 
 // What the others told us. Unknown = Alive.
 std::map<uint32_t, LifeState> sTeam;
+
+// Death link: after a teammate's death killed us, our own death isn't sent
+// back (CoC's s_deathLinkQuietUntil = 300 ticks, 10 s at their 30 per second)
+std::chrono::steady_clock::time_point sDeathLinkQuietUntil;
+constexpr auto kDeathLinkQuiet = std::chrono::seconds(10);
 
 // The state we send for our local state. Dying goes out as Alive.
 LifeState WireOf(LocalLife s) {
@@ -281,6 +302,47 @@ void UpdateMusic(PlayState* play) {
     sPrevLife = life;
 }
 
+// --- death link (Crests of Courage features.cpp) ---
+
+// CoC update_death_link: life went from something to 0 -> tell everybody.
+// Here "really died" = we just started Dying (no fairy). A fairy revive goes
+// Reviving instead and isn't a death. No data: the event's origin says who.
+void SendDeathLinkIfDied(LocalLife prev) {
+    if (!CoopGame::RoomDeathLink() || sLife != LocalLife::Dying) {
+        return;
+    }
+    if (prev != LocalLife::Alive && prev != LocalLife::Reviving) {
+        return; // was already dead / down, not a new death
+    }
+    if (std::chrono::steady_clock::now() < sDeathLinkQuietUntil) {
+        SPDLOG_INFO("[LifeSync] death link: our death came from a teammate's, not sent back");
+        return;
+    }
+    CoopGame::SendEvent(Coop::EventKind::DeathLink, {});
+    SPDLOG_INFO("[LifeSync] death link: local death, sent");
+}
+
+// CoC apply_death_link: a teammate died, so do we (if we're still up)
+void OnDeathLinkEvent(const Coop::Event& e) {
+    if (!e.data.empty() || e.origin == 0 || e.origin == CoopGame::SelfId()) {
+        return; // broken packet, or our own
+    }
+    if (!CoopGame::RoomDeathLink() || gPlayState == nullptr || !CoopGame::LocalState().inGame ||
+        GET_PLAYER(gPlayState) == nullptr) {
+        return;
+    }
+    if (gSaveContext.health <= 0 || sLife != LocalLife::Alive) {
+        return; // already dying / down / being revived
+    }
+    sDeathLinkQuietUntil = std::chrono::steady_clock::now() + kDeathLinkQuiet;
+    // the game does the rest: Player_UpdateCommon kills Link when health is 0
+    // (once on the ground and out of a cutscene), fairy check included
+    gSaveContext.health = 0;
+    std::string who = CoopGame::PlayerName(e.origin);
+    SPDLOG_INFO("[LifeSync] death link: {} died, dying too", who);
+    CoopGame::Notify(CoopGame::NoticeKind::Players, who + "\ndied, so did you.");
+}
+
 void ResetLocal() {
     sLife = LocalLife::Alive;
     sBlockedFunnel = false;
@@ -304,6 +366,7 @@ void Tick() {
 
     LocalLife prev = sLife;
     UpdateLocalLife(gPlayState);
+    SendDeathLinkIfDied(prev);
 
     if (sLife == LocalLife::Downed && prev != LocalLife::Downed) {
         // just went down: undo the darkening for a bit, reset the follow latch
@@ -392,6 +455,7 @@ void OnSceneLoaded(int16_t) {
 void RegisterCoopLife() {
     CoopGame::OnEveryFrame("CoopLife", Tick);
     CoopGame::OnEvent(Coop::EventKind::LifeState, "CoopLife", OnLifeStateEvent);
+    CoopGame::OnEvent(Coop::EventKind::DeathLink, "CoopLife", OnDeathLinkEvent);
 
     // TrueCoop resets on disconnect (RegisterCoopLifeSyncHooks). Our frame
     // callbacks stop with the session, so watch for it here.

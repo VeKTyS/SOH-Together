@@ -157,6 +157,9 @@ void FollowHostTime() {
     if (session.Role() != Coop::SessionRole::Connected || !gLocalState.inGame || session.Players().empty()) {
         return;
     }
+    if (!CoopGame::RoomSyncTime()) {
+        return; // host turned "Time of day" off
+    }
     const std::optional<Coop::PlayerState>& host = session.Players()[0].state;
     if (host && host->inGame) {
         gSaveContext.dayTime = host->dayTime;
@@ -317,11 +320,6 @@ void DrawOwnLook() {
         Color_RGB8 out = { static_cast<uint8_t>(rgb[0] * 255), static_cast<uint8_t>(rgb[1] * 255),
                            static_cast<uint8_t>(rgb[2] * 255) };
         CVarSetColor24(CVAR_COOP("Color.Value"), out);
-        SaveCVars();
-    }
-    bool minimap = CVarGetInteger(CVAR_COOP("ShowOnMinimap"), 1) != 0;
-    if (ImGui::Checkbox("Show teammates on the minimap", &minimap)) {
-        CVarSetInteger(CVAR_COOP("ShowOnMinimap"), minimap ? 1 : 0);
         SaveCVars();
     }
     bool tint = CVarGetInteger(CVAR_COOP("TintTunics"), 1) != 0;

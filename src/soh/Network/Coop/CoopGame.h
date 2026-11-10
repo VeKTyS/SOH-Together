@@ -60,7 +60,18 @@ void OnBeforeJoin(const std::string& name, std::function<void()> fn);
 // --- notifications (CoopNotify.cpp, Crests of Courage notify.cpp) ---
 enum class NoticeKind : uint8_t { Item, Players, Randomizer, Teleport, Other };
 // Shows a pop-up on screen (queued, stacked). Any thread, locks itself.
+// Text is "title", or a title and a second line separated by a newline.
 void Notify(NoticeKind kind, const std::string& text);
+
+// --- chat / blocking (CoopChat.cpp) ---
+// Blocked players (Co-op > Block players): hide their chat, voice, name tag. Locks itself.
+bool IsBlocked(uint32_t playerId);
+// True while the chat box has the keyboard.
+bool ChatIsTyping();
+
+// --- voice (CoopVoice.cpp) ---
+// They're talking right now (for a talking icon). Game thread, session locked.
+bool VoiceIsTalking(uint32_t playerId);
 // Our player id (same numbers as RemotePlayer::id / Event::origin), 0 if none yet.
 uint32_t SelfId();
 // Hosting or connected.
@@ -108,6 +119,15 @@ const char* RoomTeleportBlocker(const Coop::RemotePlayer& them);
 uint8_t RoomPvpMode();           // Anchor roomState.pvpMode: 0 off, 1 other teams, 2 everyone
 uint8_t RoomShowLocationsMode(); // 0 nobody, 1 my team, 2 everyone
 uint8_t OwnTeam();               // CVAR_COOP("Team"), 0-7
+// host's game rules (Crests of Courage): what gets synced, death link, waiting for the boss, PvP damage
+bool RoomSyncDungeon();
+bool RoomSyncWorldObjects();
+bool RoomSyncTime();
+bool RoomDeathLink();
+bool RoomBossWait();
+uint16_t RoomPvpDamagePercent();
+// "Keep my own ammo and hearts" on join, and the file isn't brand new (CoopJoin.cpp)
+bool JoinKeepsOwnConsumables();
 
 // --- randomizer (CoopRando.cpp) ---
 // Hash of the seed + settings for the handshake; 0 = vanilla.

@@ -208,6 +208,7 @@ void Session::HandleEvent(TransportEvent& ev) {
             if (mRole == SessionRole::Connecting || mRole == SessionRole::Connected) {
                 mLastError = why;
                 mTransport.reset();
+                mPlayers.clear(); // the relayed players came through the host, they're gone too
                 mRole = SessionRole::Off;
             }
             break;

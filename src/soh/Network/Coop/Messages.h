@@ -90,10 +90,10 @@ enum class EventKind : uint8_t {
     Resync = 19,            // "send me everything again" (Anchor RequestTeamState button)
     EnemyRoster = 20,       // which enemies are still alive (TrueCoop EnemyRoster)
     Chat = 21,              // text chat (Crests of Courage chat.cpp)
-    SkipVote = 22,          // vote to skip a cutscene (Crests of Courage skipvote.cpp)
+    SkipVote = 22,          // sub 0: vote to skip a cutscene, sub 1: ready for the boss (CoC skipvote / boss)
     Voice = 23,             // a voice chat frame, sent on the fast lane (Crests of Courage voice.cpp)
     DeathLink = 24,         // "I died, everybody dies" (Crests of Courage death link)
-    SaveBackup = 25,        // reserved for join / save stuff (Crests of Courage join_sync.cpp)
+    SaveBackup = 25,        // sub 1: where to reach me if the host leaves (CoopJoin, CoC host migration)
     Custom1 = 40,           // free for later features
     Custom2 = 41,
     Custom3 = 42,
